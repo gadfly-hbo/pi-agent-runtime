@@ -1,0 +1,44 @@
+{
+  "version": "0.4.0",
+  "standard": "v0.3",
+  "package": {
+    "file": "pi-agent-runtime-0.4.0.tgz",
+    "sha256": "a48843e3805b1591b30218573a68b97f295469e3831e022207ed6d25f871ce68",
+    "bytes": 92838
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1"
+  },
+  "validation": {
+    "corePass": 162,
+    "coreSkipped": 0,
+    "uiPass": 2,
+    "typecheck": "PASS",
+    "build": "PASS",
+    "independentSourceReview": "PASS",
+    "extractedPackageConsumer": "PASS",
+    "dependencyInstallation": "NOT_RUN; reused existing exact dependency tree"
+  },
+  "notRun": [
+    "JuanerAI production adoption",
+    "real provider calls for this release",
+    "real data",
+    "production migration",
+    "deployment"
+  ],
+  "sourceSha256": {
+    "src/budget.ts": "abe58ed5536c527482095d62af9efb783f6e5a60f4a641566d590b98034cf879",
+    "src/errors.ts": "768be11798bfb984e14445fffe082f99ac257d8f36b9b77a29bd0a844d9884e0",
+    "src/execution.ts": "b15e82fa4bfd1f3e55cc5302ddfebf8b0ceda0380087ebc6bf2b837aef5133eb",
+    "src/index.ts": "f4dcd24c4d59c0534195883a8072a758436df2484c45ad352f33a6fb324bf463",
+    "src/pi-adapter.ts": "f4b5077f659bbe2727fe7d952e62d0ae025f9e93ffa9c9f6669a0c9409cf404f",
+    "src/settings.ts": "ec062bb18bb0592152c737fe8f32e346e6c3c7511ab89ded699f01ce07d02738",
+    "src/testing.ts": "d14eb8d924d81bdac865feb0348d5a0936c910329fb0e12b47e08a9a71601679",
+    "src/types.ts": "b5ff2685a68c27faa60f95b63accbc397f1f71f2f692f2ea4848f4fd6cba89b9",
+    "src/ui.css": "59c7ea64b83bf7d2f44ccf25fcc42b4f425bfbe3f6d44e51c14126a6051a0fea",
+    "src/ui.tsx": "51bbbe07ef11a7240b08abef81f14640a10388439c6b366fd9e53e5666276a79",
+    "src/validation.ts": "ecdc0e492d517d21c5dfdf863044bee60d0be7b187065e2d69d86314deb32245"
+  },
+  "artifactPolicy": "Original local 0.4.0 tgz is preserved byte-for-byte. Git bootstrap adds publication metadata only; do not rebuild and overwrite this release asset."
+}

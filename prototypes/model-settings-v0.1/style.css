@@ -1,0 +1,51 @@
+/* Local token baseline reused from saas-product-ui-system. */
+:root { --font-sans: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; --accent-600:#283b36; --accent-700:#182b26; --focus-ring:#527d7166; --bg-canvas:#f7f8f7; --text-primary:#202925; }
+.dark { --accent-600:#a1c7b9; --accent-700:#bddbcc; --bg-canvas:#121917; --text-primary:#eef3f0; --bg-surface:#1a2320; --bg-elevated:#212d28; --text-secondary:#b8c6bf; --text-tertiary:#9cada4; --border-subtle:#34433c; --border-strong:#53665c; }
+* {box-sizing:border-box} body {margin:0;background:var(--bg-canvas);color:var(--text-primary);font:var(--type-body)}
+button,input,select {font:inherit} button {cursor:pointer;border:1px solid transparent;border-radius:8px;padding:9px 14px;min-height:42px;line-height:1.35;font-size:14px;font-weight:550}
+button:disabled {opacity:.45;cursor:not-allowed} button:hover:not(:disabled) {filter:brightness(.94)} :focus-visible {outline:3px solid var(--focus-ring);outline-offset:3px}
+.primary {background:var(--accent-600);color:var(--text-inverse)} .secondary {background:var(--bg-surface);border-color:var(--border-strong);color:var(--text-primary)}
+.quiet {background:transparent;color:var(--text-secondary)} .small {padding:6px 9px;min-height:36px} .danger {color:#ba3c32} .dark .danger {color:#ffa69b}
+.prototype-banner {padding:9px 16px;background:var(--bg-inset);color:var(--text-secondary);text-align:center;font-size:13px}
+.topbar {max-width:1200px;margin:auto;display:flex;align-items:center;justify-content:space-between;padding:22px 32px;border-bottom:1px solid var(--border-subtle);gap:12px}
+.brand {color:inherit;text-decoration:none;display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-weight:600;font-size:15px} .brand .muted {font-weight:400}
+.brand-mark {display:grid;place-items:center;width:30px;height:30px;background:var(--accent-600);color:var(--text-inverse);border-radius:8px;font-family:Georgia,serif;font-size:24px;line-height:1}
+main {max-width:1040px;margin:auto;padding:36px 32px 40px} h1,h2,h3,p {margin:0} h1 {font-size:30px;letter-spacing:-.6px;line-height:1.25;margin-bottom:9px}
+h2 {font-size:19px;font-weight:600} h3 {font-size:18px;font-weight:600} .eyebrow {font-size:12px;letter-spacing:1.3px;color:var(--text-tertiary);margin-bottom:10px}
+.muted,.helper {color:var(--text-secondary);font-size:14px;line-height:1.6} .page-heading,.section-heading {display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.page-heading {margin-bottom:30px} .section-heading p {margin-top:6px} .card {box-shadow:none;border-radius:14px} .routing {padding:26px;margin-bottom:30px}
+.badge {font-size:13px;border:1px solid var(--border-subtle);padding:4px 9px;border-radius:6px;color:var(--text-secondary);background:var(--bg-subtle);white-space:nowrap}
+.mode-row {display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:24px 0 20px;padding-top:20px;border-top:1px solid var(--border-subtle)} .mode-row select {width:auto;max-width:100%}
+label {display:block;font-size:14px;font-weight:550;margin-bottom:8px} .mode-row label {margin:0}
+select,input {width:100%;min-width:0;border:1px solid var(--border-strong);border-radius:8px;background:var(--bg-surface);color:var(--text-primary);min-height:44px;padding:10px 12px;font-size:15px}
+input::placeholder {color:var(--text-tertiary);font-size:14px} .route-grid {display:grid;grid-template-columns:1fr 1.15fr;gap:24px;align-items:start}
+.route-grid .helper {margin-top:8px} .label-row {display:flex;justify-content:space-between;gap:8px} .label-row .helper {margin:0;font-size:13px}
+.add-backup {display:flex;gap:8px;margin-top:8px} .add-backup select {flex:1}
+.fallback {display:flex;gap:10px;align-items:center;padding:8px 10px;margin-bottom:6px;border:1px solid var(--border-subtle);background:var(--bg-subtle);border-radius:8px}
+.order {width:24px;height:24px;display:grid;place-items:center;border-radius:50%;background:var(--bg-surface);color:var(--text-secondary);font-size:13px;flex-shrink:0}
+.fallback-name {flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px} .fallback-actions {display:flex;flex-shrink:0} .fallback-actions button {padding:4px 6px;min-width:30px}
+.empty-backup {font-size:14px;color:var(--text-secondary);padding:12px;border:1px dashed var(--border-strong);border-radius:8px}
+.validation {margin-top:20px;padding:12px 14px;border-radius:8px;background:#fcf4e8;color:#715020;font-size:14px} .validation:empty {display:none} .dark .validation {background:#352c1e;color:#e6c387} .validation ul {margin:0;padding-left:20px}
+.active-summary {display:flex;align-items:baseline;gap:8px;border-top:1px solid var(--border-subtle);padding-top:18px;margin-top:20px;font-size:13px;color:var(--text-secondary);overflow-wrap:anywhere}
+.status-dot {width:7px;height:7px;background:var(--text-tertiary);border-radius:50%;flex-shrink:0} .provider-heading {margin-bottom:16px} .provider-card {margin-bottom:16px;padding:24px}
+.provider-header {display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px} .provider-title {display:flex;align-items:center;gap:12px;min-width:0}
+.provider-icon {color:var(--text-secondary);font-size:24px} .provider-title h3 {overflow-wrap:anywhere} .provider-actions {display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.switch {display:inline-flex;align-items:center;gap:7px} .switch-track {width:34px;height:20px;background:var(--border-strong);border-radius:20px;padding:3px}
+.switch[aria-checked="true"] .switch-track {background:var(--accent-600)} .switch-thumb {width:14px;height:14px;border-radius:50%;background:white;display:block} .switch[aria-checked="true"] .switch-thumb {margin-left:14px}
+.connection-grid {margin:20px 0;display:grid;grid-template-columns:1.2fr 1fr;gap:16px} .field-title {font-size:13px;color:var(--text-secondary);margin-bottom:6px}
+.field-value {padding:10px 12px;border:1px solid var(--border-subtle);border-radius:8px;font-size:14px;min-height:42px;overflow-wrap:anywhere}
+.credential {display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-bottom:18px;margin-bottom:18px;border-bottom:1px solid var(--border-subtle)} .credential p {flex:1}
+.model-heading {display:flex;justify-content:space-between;align-items:center;margin-bottom:10px} .model-list {border:1px solid var(--border-subtle);border-radius:10px}
+.model-row {display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 14px} .model-row + .model-row {border-top:1px solid var(--border-subtle)}
+.model-info {flex:1;min-width:130px} .model-name {font-size:15px;font-weight:550;overflow-wrap:anywhere} .model-meta {font-size:13px;color:var(--text-secondary);margin-top:3px;overflow-wrap:anywhere}
+.model-actions {display:flex;flex-wrap:wrap;gap:2px;align-items:center} .check-label {font-size:13px;color:var(--text-secondary)}
+.empty {padding:40px 22px;text-align:center;border:1px dashed var(--border-strong);border-radius:14px} .empty h3 {margin-bottom:8px} .empty button {margin-top:18px}
+.boundary {display:flex;gap:12px;color:var(--text-secondary);font-size:13px;line-height:1.65;padding:8px 4px 24px}
+.actionbar {display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px;align-items:center;padding-top:22px;border-top:1px solid var(--border-subtle)}
+.actions {display:flex;flex-wrap:wrap;gap:8px} .notice {margin-top:18px;min-height:22px;font-size:14px;color:var(--text-secondary)}
+dialog {width:min(520px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow-y:auto;padding:26px;border:1px solid var(--border-subtle);border-radius:16px;background:var(--bg-surface);color:var(--text-primary);box-shadow:var(--shadow-strong)}
+dialog::backdrop {background:#101a1666} dialog label {margin-top:20px} dialog .helper {margin-top:10px} .dialog-actions {display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.checkbox-row {display:flex;align-items:center;gap:10px} .checkbox-row input {width:18px;min-height:18px;height:18px}
+.error {color:#ba3c32;font-size:14px;margin-top:12px} .dark .error {color:#ffa69b}
+@media(max-width:720px) {.topbar{padding:16px}main{padding:28px 16px}.routing,.provider-card{padding:18px}.route-grid,.connection-grid{grid-template-columns:1fr;gap:18px}.actionbar .actions{width:100%}h1{font-size:26px}.mode-row .helper{flex-basis:100%}}
+@media(max-width:400px) {.brand .muted{display:none}.provider-actions{gap:0}.provider-card{padding:14px}.model-row{padding:12px}.label-row{flex-wrap:wrap;margin-bottom:8px}.fallback{flex-wrap:wrap}.actions button{flex-grow:1}}

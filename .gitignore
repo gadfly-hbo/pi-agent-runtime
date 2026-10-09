@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.npm-cache/
+*.tgz
+.env
+.env.*
+!.env.example
+.DS_Store
+# Local historical evidence, packages, machine receipts and build previews stay local.
+artifacts/*
+!artifacts/public/
+SYNC-RECEIPT.md

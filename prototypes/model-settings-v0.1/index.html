@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>模型与连接 · Pi Agent 配置原型</title>
+<link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
+</head>
+<body>
+<div class="prototype-banner">交互原型 v0.1 · 合成数据 · 不连接模型，不保存密钥 · 刷新重置</div>
+<header class="topbar"><a class="brand" href="#main"><span class="brand-mark" aria-hidden="true">p</span>Pi Agent <span class="muted">/ 配置基础包</span></a><button id="theme" class="quiet" aria-label="切换深色模式">◐ 外观</button></header>
+<main id="main" tabindex="-1">
+<div class="page-heading"><div><p class="eyebrow">AGENT SETTINGS</p><h1>模型与连接</h1><p class="muted">配置你的模型来源，以及任务运行时的主备顺序。</p></div><button id="demo" class="secondary">载入合成演示</button></div>
+<section class="card routing" aria-labelledby="route-title">
+<div class="section-heading"><div><h2 id="route-title">运行模型</h2><p class="muted">一个主模型，至少一个备用模型。备用按顺序尝试。</p></div><span id="draft-status" class="badge">未配置</span></div>
+<div class="mode-row"><label for="mode">用途</label><select id="mode"><option value="worker">单次调用 · Worker</option><option value="agent">工具 Agent · 需要工具能力</option></select><span class="helper">仅演示用途校验，正式版由产品指定。</span></div>
+<div class="route-grid"><div><label for="primary">主模型</label><select id="primary"></select><p class="helper">任务先使用此模型。</p></div><div><div class="label-row"><label for="backup-select">备用模型</label><span class="helper">按优先级排列</span></div><div id="fallbacks"></div><div class="add-backup"><select id="backup-select" aria-label="选择要添加的备用模型"></select><button id="add-backup" class="secondary">添加</button></div></div></div>
+<div id="route-errors" class="validation" aria-live="polite"></div>
+<div class="active-summary"><span class="status-dot" aria-hidden="true"></span><span id="active">尚无生效配置。保存草稿不会启动 Agent。</span></div>
+</section>
+<section aria-labelledby="providers-title"><div class="section-heading provider-heading"><div><h2 id="providers-title">模型来源</h2><p class="muted">启用来源不会自动设为主模型。</p></div><button id="add-provider" class="secondary">＋ 添加 Provider</button></div><div id="providers"></div></section>
+<aside class="boundary"><span aria-hidden="true">◇</span><p>密钥由产品宿主安全保存。真实连接检查需单独确认；此原型只提供模拟检查。<br>切换备用不重置预算或授权，也不重放已执行的工具。</p></aside>
+<footer class="actionbar"><p id="save-status" class="helper">草稿仅存在本页内存中。</p><div class="actions"><button id="discard" class="quiet">放弃更改</button><button id="save" class="secondary">保存草稿（本页内）</button><button id="apply" class="primary">校验并生效（模拟）</button></div></footer>
+<div id="notice" class="notice" role="status" aria-live="polite"></div>
+</main>
+<dialog id="provider-dialog" aria-labelledby="provider-dialog-title"><form id="provider-form">
+<div class="section-heading"><h2 id="provider-dialog-title">添加 Provider</h2><button class="quiet close-dialog" type="button" aria-label="关闭 Provider 编辑">✕</button></div><p class="helper">只编辑连接信息。这里不接受真实 API Key。</p>
+<label for="provider-name">显示名称</label><input id="provider-name" required maxlength="80" autocomplete="off" placeholder="例如：我的模型服务">
+<label for="provider-url">Base URL</label><input id="provider-url" type="url" required autocomplete="off" placeholder="https://api.example.com">
+<label for="provider-protocol">API 格式</label><select id="provider-protocol"><option value="openai-completions">Chat Completions (/chat/completions)</option><option value="anthropic-messages">Anthropic Messages (/v1/messages)</option><option disabled>Responses · 当前未接入</option></select>
+<p id="provider-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary" type="submit">保存到草稿</button></div>
+</form></dialog>
+<dialog id="model-dialog" aria-labelledby="model-dialog-title"><form id="model-form">
+<div class="section-heading"><h2 id="model-dialog-title">添加模型</h2><button class="quiet close-dialog" type="button" aria-label="关闭模型编辑">✕</button></div>
+<label for="model-id">模型 ID</label><input id="model-id" required maxlength="200" autocomplete="off" placeholder="Provider 接受的原始 model ID">
+<label for="model-name">显示名称 <span class="helper">可选</span></label><input id="model-name" maxlength="80" autocomplete="off" placeholder="未填写时使用模型 ID">
+<label for="model-context">上下文上限（tokens）</label><input id="model-context" type="number" min="1" max="100000000" step="1" required placeholder="依据供应商说明填写，不自动猜测">
+<label class="checkbox-row"><input id="model-tools" type="checkbox">声明支持工具调用</label><p class="helper">用户声明，不是连接检查或工具能力验证结论。</p>
+<p id="model-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary" type="submit">保存到草稿</button></div>
+</form></dialog>
+</body></html>

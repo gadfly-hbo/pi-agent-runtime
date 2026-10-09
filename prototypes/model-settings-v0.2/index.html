@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>模型设置 · 简化原型</title>
+<link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
+</head><body>
+<div class="prototype-note">交互原型 · 示例数据 · 不联网、不保存真实密钥 · 刷新重置</div>
+<main id="main">
+<header class="page-head"><h1>模型设置</h1><div class="header-actions"><button id="demo" class="text-button">查看示例</button><button id="add-provider" class="secondary">＋ 添加 Provider</button></div></header>
+<div id="providers"></div>
+<section class="routing" aria-label="主备模型选择">
+<div class="route-grid"><div><label for="primary">主模型</label><select id="primary"></select></div><div><div class="label-row"><label for="backup-select">备用模型</label><span class="hint">按顺序使用</span></div><div id="fallbacks"></div><div class="backup-add"><select id="backup-select" aria-label="添加备用模型"></select><button id="add-backup" class="icon-button" aria-label="添加备用">＋</button></div></div></div>
+</section>
+<footer><span id="notice" role="status" aria-live="polite"></span><button id="save" class="primary">保存</button></footer>
+</main>
+<dialog id="provider-dialog" aria-labelledby="provider-title"><form id="provider-form">
+<div class="dialog-head"><h2 id="provider-title">添加 Provider</h2><button type="button" class="icon-button close" aria-label="关闭 Provider 弹窗">✕</button></div>
+<label for="provider-name">名称</label><input id="provider-name" required maxlength="80" autocomplete="off">
+<label for="provider-url">Base URL</label><input id="provider-url" type="url" required placeholder="https://…" autocomplete="off">
+<label for="provider-protocol">API 格式</label><select id="provider-protocol" required><option value="">选择 API 格式</option><option value="anthropic-messages">Anthropic Messages (/v1/messages)</option><option value="openai-completions">Chat Completions (/chat/completions)</option><option disabled>Responses · 暂未接入</option></select>
+<p id="provider-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" class="text-button close">取消</button><button id="provider-submit" class="primary">添加</button></div>
+</form></dialog>
+<dialog id="model-dialog" aria-labelledby="model-title"><form id="model-form">
+<div class="dialog-head"><h2 id="model-title">添加模型</h2><button type="button" class="icon-button close" aria-label="关闭模型弹窗">✕</button></div>
+<div class="smart-row"><span>智能配置</span><button type="button" class="icon-button info" title="暂未接入可靠模型资料，当前手动填写参数" aria-label="智能配置说明">?</button><button type="button" class="toggle" role="switch" aria-checked="false" aria-label="智能配置（暂未接入）" disabled><span></span></button></div>
+<label for="model-id">模型 ID</label><input id="model-id" placeholder="模型 ID" required maxlength="200" autocomplete="off">
+<label for="model-context">上下文窗口 <span class="field-tip" title="模型可以处理的总 token 上限">?</span></label><input id="model-context" type="number" min="1" step="1" required>
+<label for="model-output">最大输出 Token <span class="field-tip" title="单次生成的输出 token 上限，不等于任务总预算">?</span></label><input id="model-output" type="number" min="1" step="1" required>
+<p id="model-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" class="text-button close">取消</button><button id="model-submit" class="primary">添加</button></div>
+</form></dialog>
+</body></html>

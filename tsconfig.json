@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
+    "allowImportingTsExtensions": true, "noEmit": true, "skipLibCheck": true,
+    "types": ["node", "react"], "jsx": "react-jsx"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "examples/offline.ts", "examples/settings-ui.tsx"]
+}

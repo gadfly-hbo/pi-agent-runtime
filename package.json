@@ -1,0 +1,57 @@
+{
+  "name": "pi-agent-runtime",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-product Pi Agent integration foundation",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "packageManager": "npm@11.19.0",
+  "exports": {
+    ".": "./dist/index.js",
+    "./testing": "./dist/testing.js",
+    "./settings": "./dist/settings.js",
+    "./ui": "./dist/ui.js",
+    "./ui.css": "./dist/ui.css"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json && node tools/copy-css.mjs",
+    "test:ui": "node --test tests/ui.test.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run test:ui",
+    "example": "node --experimental-strip-types examples/offline.ts",
+    "verify:package": "npm run build && node tools/verify-package.mjs",
+    "preview:settings": "npm run build && node tools/preview-settings.mjs",
+    "verify:harness-package": "npm run build && node tools/verify-harness-package.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1"
+  },
+  "peerDependencies": {
+    "react": "^19.3.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.25.11",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}
