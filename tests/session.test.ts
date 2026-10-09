@@ -22,7 +22,8 @@ async function fixture(t: test.TestContext) {
   return {options, directory};
 }
 
-test('NS01 disk continuation consumes the prior tool result; fork keeps task consumption', async t => {
+for (const policy of ['finite','uncapped'] as const) test(`NS01 disk continuation consumes the prior tool result; fork keeps task consumption (${policy})`, async t => {
+  const limits = policy === 'finite' ? {modelCalls:10,toolCalls:5,outputTokens:100,wallTimeMs:10000} : {cumulative:'unlimited' as const,maxOutputTokens:10,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
   const {options} = await fixture(t);
   let calls = 0, effects = 0;
   const tools = [{name: 'lookup', description: 'Synthetic lookup', effect: 'read' as const, resourceUnits: 1,
@@ -162,7 +163,8 @@ test('NS07 native Skill and template contents reach the model; resource changes 
   assert.equal(calls, 2);
 });
 
-test('NS08 manual compaction uses the guarded model and its native summary is consumed next', async t => {
+for (const policy of ['finite','uncapped'] as const) test(`NS08 manual compaction uses the guarded model and its native summary is consumed next (${policy})`, async t => {
+  const limits = policy === 'finite' ? {modelCalls:10,toolCalls:5,outputTokens:100,wallTimeMs:10000} : {cumulative:'unlimited' as const,maxOutputTokens:10,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
   const {options} = await fixture(t);
   options.harness = {compaction: {enabled: false, reserveTokens: 256, keepRecentTokens: 1}};
   let summaries = 0, calls = 0;
@@ -185,7 +187,8 @@ test('NS08 manual compaction uses the guarded model and its native summary is co
   assert.equal(next.usage.modelCalls, calls);
 });
 
-test('NS09 automatic native compaction runs during a sustained task and shares the ledger', async t => {
+for (const policy of ['finite','uncapped'] as const) test(`NS09 automatic native compaction runs during a sustained task and shares the ledger (${policy})`, async t => {
+  const limits = policy === 'finite' ? {modelCalls:10,toolCalls:5,outputTokens:100,wallTimeMs:10000} : {cumulative:'unlimited' as const,maxOutputTokens:10,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
   const {options} = await fixture(t);
   options.model.contextWindow = 512;
   options.harness = {compaction: {enabled: true, reserveTokens: 128, keepRecentTokens: 1}};

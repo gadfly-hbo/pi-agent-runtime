@@ -18,6 +18,7 @@ import {
 } from '@earendil-works/pi-ai';
 import type {AgentRequest, BaseRequest, ConversationCheckpoint, JsonObject, ModelConfig, ModelContent, ModelMessage, ModelReply, ModelTransport, PiTransportOptions, Tool, SessionRuntimeOptions, SessionRuntime, SessionRunRequest, SessionInfo, SessionBinding, HarnessSettings, HarnessControl, HarnessControlResult, ExecutionEnvironment, ResourceLoadOptions, LoadedResources, DeferredReference, ProxyTransportOptions} from './types.ts';
 import {RuntimeFault, ProviderFailure} from './errors.ts';
+import {outputCap} from './policy.ts';
 import {validateThinking} from './validation.ts';
 
 function toPiContent(content: ModelContent): AssistantMessage['content'][number] {
@@ -116,21 +117,41 @@ function fromCheckpoint(checkpoint: ConversationCheckpoint, config: ModelConfig,
       stopReason:message.calls?.length?'toolUse':'stop',timestamp,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
   });
 }
-export async function drive(config: ModelConfig, request: BaseRequest, transport: ModelTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
+type ControlGuard = <T>(operation: () => Promise<T>) => Promise<T>;
+const directControl: ControlGuard = operation => operation();
+
+// Each storage operation has its own control deadline; never time the whole native lane.
+function guardedSessionFiles(env: NodeExecutionEnv, guard: ControlGuard): NodeExecutionEnv {
+  return new Proxy(env, {get(target, property) {
+    if (property === 'openTextLineReader') return async (...args: Parameters<NodeExecutionEnv['openTextLineReader']>) => {
+      const result = await guard(() => target.openTextLineReader(...args));
+      if (!result.ok) return result;
+      const reader = result.value;
+      return {ok: true as const, value: {
+        readLine: (context: Context) => guard(() => reader.readLine(context)),
+        close: (context: Context) => guard(() => reader.close(context)),
+      }};
+    };
+    const method = Reflect.get(target, property);
+    return typeof method === 'function' ? (...args: unknown[]) => guard(() => method.apply(target, args)) : method;
+  }});
+}
+
+export async function drive(config: ModelConfig, request: BaseRequest, transport: ModelTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>, guard: ControlGuard = directControl): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
   const legacy = request as AgentRequest;
   // Existing durable checkpoints retain their versioned semantics until migration.
   // Ordinary runs use the native harness without inventing a persistent contract.
   return legacy.checkpoint || legacy.saveCheckpoint || legacy.shouldYield
-    ? driveCheckpoint(config, request, transport, signal, tools, activeModel)
-    : driveHarness(config, request, transport, signal, tools, activeModel);
+    ? driveCheckpoint(config, request, transport, signal, tools, activeModel, guard)
+    : driveHarness(config, request, transport, signal, tools, activeModel, undefined, guard);
 }
 
 async function driveHarness(config: ModelConfig, request: BaseRequest, transport: ModelTransport,
   signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig,
-  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}): Promise<string | {suspended: SessionBinding}> {
+  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl): Promise<string | {suspended: SessionBinding}> {
   const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
   const repo = new MemorySessionRepo();
-  const model = providerModel(config, request.limits.outputTokens);
+  const model = providerModel(config, outputCap(request.limits));
   let failure: unknown;
   let harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'] | undefined;
   const callIds = new Set<string>();
@@ -149,7 +170,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       try {
         assertOpen();
         const reply = await transport({model: config, messages: messages(transcript),
-          maxOutputTokens: Math.min(request.limits.outputTokens, maxTokens ?? request.limits.outputTokens),
+          maxOutputTokens: Math.min(outputCap(request.limits), maxTokens ?? outputCap(request.limits)),
           signal: nativeSignal ? AbortSignal.any([signal, nativeSignal]) : signal,
           ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
           ...(deferred ? {deferred} : startDeferred ? {deferred:{action:'start' as const}} : {})});
@@ -171,7 +192,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         // it does not honor a called tool's sequential override. Preserve the
         // SDK batch contract at the effect boundary, without another tool loop.
         serializeBatch = calls.some(call => tools.find(tool => tool.name === call.name)?.executionMode === 'sequential');
-        const chosen = providerModel(activeModel(), request.limits.outputTokens);
+        const chosen = providerModel(activeModel(), outputCap(request.limits));
         if (reply.stop === 'deferred' && (!config.deferred || !reply.deferred)) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
         const stopReason = reply.stop === 'deferred' ? 'deferred' : reply.stop === 'complete' ? 'stop' : 'toolUse';
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
@@ -205,8 +226,8 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
   };
   models.setProvider(provider);
   try {
-    const session = persistent?.session ?? await repo.create({}, context);
-    const attached = await AgentHarness.create({session, models, model,
+    const session = persistent?.session ?? await guard(() => repo.create({}, context));
+    const attached = await guard(() => AgentHarness.create({session, models, model,
       systemPrompt: (request.system ?? '') + (persistent?.settings.skills?.length ? '\n' + formatSkillsForSystemPrompt([...persistent.settings.skills]) : ''), thinkingLevel: request.thinkingLevel ?? 'off',
       toolExecution: request.toolExecution ?? 'sequential',
       steeringMode: persistent?.settings.steeringMode ?? 'all', followUpMode: persistent?.settings.followUpMode ?? 'all',
@@ -215,7 +236,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       retry: persistent?.settings.retry ?? {enabled: false, maxRetries: 0, baseDelayMs: 0},
       compaction: persistent?.settings.compaction ?? {...DEFAULT_COMPACTION_SETTINGS, enabled: false},
       entryProjectors: Object.fromEntries((persistent?.extensions?.customEntryTypes ?? []).map(type => [type, entry =>
-        fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:persistent?.extensions?.projectEntry?.({type:entry.customType,...(entry.data === undefined ? {} : {data:entry.data})}) ?? []}, config, request.limits.outputTokens)])),
+        fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:persistent?.extensions?.projectEntry?.({type:entry.customType,...(entry.data === undefined ? {} : {data:entry.data})}) ?? []}, config, outputCap(request.limits))])),
       resources: {skills: [...(persistent?.settings.skills ?? [])], promptTemplates: [...(persistent?.settings.templates ?? [])]},
       tools: tools.map(tool => ({name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as unknown as TSchema, replay: tool.replay ?? 'never' as const,
@@ -245,26 +266,26 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
           return pending;
         },
       })),
-    }, context);
+    }, context));
     harness = attached.harness;
     const extensions = persistent?.extensions;
     if (extensions?.transformContext) harness.hooks.on('transform_context', async e => {
-      const result = await extensions.transformContext!({messages: messages(e), system:e.systemPrompt});
-      return result ? {...(result.messages ? {messages:fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:result.messages},config,request.limits.outputTokens)} : {}), ...(result.system === undefined ? {} : {systemPrompt:result.system})} : undefined;
+      const result = await guard(async () => extensions.transformContext!({messages: messages(e), system:e.systemPrompt}));
+      return result ? {...(result.messages ? {messages:fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:result.messages},config,outputCap(request.limits))} : {}), ...(result.system === undefined ? {} : {systemPrompt:result.system})} : undefined;
     });
-    if (extensions?.beforeRequest) harness.hooks.on('before_request', async e => {await extensions.beforeRequest!({step:e.step,attempt:e.attempt});return undefined;});
-    if (extensions?.beforeTool) harness.hooks.on('before_tool', async e => {const result = await extensions.beforeTool!({name:e.toolName,arguments:e.args as JsonObject});return result ? {...(result.arguments ? {args:result.arguments} : {}),...(result.block ? {block:{reason:result.block,terminate:true}} : {})} : undefined;});
-    if (extensions?.beforeEnd) harness.hooks.on('before_run_end', () => extensions.beforeEnd!());
+    if (extensions?.beforeRequest) harness.hooks.on('before_request', async e => {await guard(async () => extensions.beforeRequest!({step:e.step,attempt:e.attempt}));return undefined;});
+    if (extensions?.beforeTool) harness.hooks.on('before_tool', async e => {const result = await guard(async () => extensions.beforeTool!({name:e.toolName,arguments:e.args as JsonObject}));return result ? {...(result.arguments ? {args:result.arguments} : {}),...(result.block ? {block:{reason:result.block,terminate:true}} : {})} : undefined;});
+    if (extensions?.beforeEnd) harness.hooks.on('before_run_end', () => guard(async () => extensions.beforeEnd!()));
     const sessionRequest = request as SessionRunRequest;
     const branch = persistent ? sessionRequest.branch ?? 'main' : 'main';
     if (persistent) {
-      const state = await session.getValue(laneState(branch), context);
+      const state = await guard(() => session.getValue(laneState(branch), context));
       if (state?.value.inbox.length) {
-        const owner = (await session.getValue(value<{taskId:string;purpose?:string}>('sdk.queue-authority.v1', branch), context))?.value;
+        const owner = (await guard(() => session.getValue(value<{taskId:string;purpose?:string}>('sdk.queue-authority.v1', branch), context)))?.value;
         if (!owner || owner.taskId !== request.taskId || owner.purpose !== request.purpose) throw new RuntimeFault('AUTHORITY_REQUIRED');
       }
-      const decision = await persistent.reconcile({taskId: request.taskId, sessionId: session.metadata.id, branch,
-        open: attached.open.map(o => ({operationId: o.operationId, branch: o.lane, kind: o.kind}))}, signal);
+      const decision = await guard(() => persistent.reconcile({taskId: request.taskId, sessionId: session.metadata.id, branch,
+        open: attached.open.map(o => ({operationId: o.operationId, branch: o.lane, kind: o.kind}))}, signal));
       assertOpen();
       if (decision !== 'ready') throw new RuntimeFault(decision === 'denied' ? 'AUTHORITY_REQUIRED' : 'STATE_FAILED');
       if (attached.open.length && (!['resume','abort'].includes(sessionRequest.operation ?? '') || attached.open.some(o => o.lane !== branch)))
@@ -274,11 +295,11 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       if (event.isError) failure ??= new RuntimeFault('TOOL_FAILED');
       return failure ? {terminate: true} : undefined;
     });
-    const lane = await harness.lane(branch, context);
+    const lane = await guard(() => harness!.lane(branch, context));
     if (persistent && !attached.open.length) {
-      await lane.setModel({provider: model.provider, modelId: model.id}, context);
-      await lane.setThinkingLevel(request.thinkingLevel ?? 'off', context);
-      await lane.setActiveTools(tools.map(t => t.name), context);
+      await guard(() => lane.setModel({provider: model.provider, modelId: model.id}, context));
+      await guard(() => lane.setThinkingLevel(request.thinkingLevel ?? 'off', context));
+      await guard(() => lane.setActiveTools(tools.map(t => t.name), context));
     }
     let result;
     if (persistent) {
@@ -286,16 +307,16 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       if (['resume','abort'].includes(sessionRequest.operation ?? '') && !current) throw new RuntimeFault('INVALID_REQUEST');
       const operationId = current?.operationId ?? randomUUID();
       if (current) {
-        const state = (await session.getValue(operationState(operationId), context))?.value;
+        const state = (await guard(() => session.getValue(operationState(operationId), context)))?.value;
         if (state?.at === 'tools') {
-          const entry = await session.getEntry(state.batch.assistantEntryId, context);
+          const entry = await guard(() => session.getEntry(state.batch.assistantEntryId, context));
           if (entry?.type !== 'message' || entry.message.role !== 'assistant') throw new RuntimeFault('STATE_FAILED');
           serializeBatch = entry.message.content.some(c => c.type === 'toolCall' && tools.find(t => t.name === c.name)?.executionMode === 'sequential');
         }
       }
       const binding = {sessionId: session.metadata.id, branch, operationId};
-      await persistent.bindOperation({...binding, taskId: request.taskId,
-        ...(request.purpose === undefined ? {} : {purpose: request.purpose})}, signal);
+      await guard(() => persistent.bindOperation({...binding, taskId: request.taskId,
+        ...(request.purpose === undefined ? {} : {purpose: request.purpose})}, signal));
       assertOpen();
       persistent.bind(binding);
       if (!current) {
@@ -307,11 +328,11 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
           case 'navigate': operation = {kind: 'navigation', operationId, targetId: sessionRequest.targetEntryId!, options: {summarize: sessionRequest.summarize ?? false, customInstructions: request.prompt}}; break;
           default: operation = {kind: 'prompt', operationId, prompt: request.prompt, ...(request.images ? {images: request.images.map(image => ({type:'image' as const,...image}))} : {})};
         }
-        const admission = await lane.accept(operation, context);
+        const admission = await guard(() => lane.accept(operation, context));
         if (!admission.ok) throw new RuntimeFault('INVALID_REQUEST');
       }
       persistent.activate(lane, harness, binding);
-      if (sessionRequest.operation === 'abort') await lane.requestAbort(operationId,context);
+      if (sessionRequest.operation === 'abort') await guard(() => lane.requestAbort(operationId,context));
       const driven = await lane.drive({operationId, waitForRetry: true, pollDeferred: sessionRequest.operation === 'resume'}, context);
       if (!driven.ok) throw new RuntimeFault('STATE_FAILED');
       if (driven.value.kind === 'waiting') {assertOpen();return {suspended:binding};}
@@ -321,10 +342,11 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
     if (result.ok && result.value.status === 'aborted') throw new RuntimeFault('CANCELLED');
     if (!result.ok || result.value.status !== 'completed') throw new RuntimeFault('MODEL_FAILED');
     if (persistent && ['compaction', 'navigation'].includes(result.value.kind)) {
-      const summary = await lane.findEntry({type: result.value.kind === 'compaction' ? 'compaction' : 'branch_summary', order: 'newestFirst'}, context);
+      const type = result.value.kind === 'compaction' ? 'compaction' : 'branch_summary';
+      const summary = await guard(() => lane.findEntry({type, order: 'newestFirst'}, context));
       return summary && 'summary' in summary ? summary.summary : '';
     }
-    const entries = await lane.findEntries({type: 'message', order: 'newestFirst', limit: 1}, context);
+    const entries = await guard(() => lane.findEntries({type: 'message', order: 'newestFirst', limit: 1}, context));
     const entry = entries[0];
     const last = entry?.type === 'message' ? entry.message : undefined;
     if (!last || last.role !== 'assistant' || last.stopReason !== 'stop' ||
@@ -333,7 +355,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
     return last.content.filter(c => c.type === 'text').map(c => c.text).join('');
   } finally {
     await persistent?.deactivate();
-    try {await harness?.close(BACKGROUND_CONTEXT);} finally {await repo.close(BACKGROUND_CONTEXT);}
+    try {await guard(async () => harness?.close(BACKGROUND_CONTEXT));} finally {await guard(() => repo.close(BACKGROUND_CONTEXT));}
   }
 }
 
@@ -360,12 +382,12 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
   const info = (m: JsonlSessionMetadata): SessionInfo => ({id: m.id, createdAt: m.createdAt,
     ...(m.parentSessionId === undefined ? {} : {parentSessionId: m.parentSessionId})});
   async function access<T>(kind: Parameters<typeof storage.authorize>[0]['kind'], sessionId: string | undefined,
-    signal: AbortSignal | undefined, action: (repo: JsonlSessionRepo, metadata: JsonlSessionMetadata | undefined, signal: AbortSignal) => Promise<T>): Promise<T> {
+    signal: AbortSignal | undefined, action: (repo: JsonlSessionRepo, metadata: JsonlSessionMetadata | undefined, signal: AbortSignal) => Promise<T>, guard: ControlGuard = directControl): Promise<T> {
     signal ??= new AbortController().signal;
     if (signal.aborted) throw new RuntimeFault('CANCELLED');
     if (sessionId !== undefined && !/^[a-zA-Z0-9_.-]{1,128}$/.test(sessionId)) throw new RuntimeFault('INVALID_REQUEST');
     try {
-      if (!await storage.authorize({kind, ...(sessionId === undefined ? {} : {sessionId})}, signal)) throw new RuntimeFault('AUTHORITY_REQUIRED');
+      if (!await guard(() => storage.authorize({kind, ...(sessionId === undefined ? {} : {sessionId})}, signal!))) throw new RuntimeFault('AUTHORITY_REQUIRED');
     } catch {throw new RuntimeFault('AUTHORITY_REQUIRED');}
     if (signal.aborted) throw new RuntimeFault('CANCELLED');
     if (busy) throw new RuntimeFault('TASK_BUSY');
@@ -373,24 +395,24 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
     let writer: Awaited<ReturnType<typeof storage.acquireWriter>> | undefined;
     let repo: JsonlSessionRepo | undefined;
     try {
-      writer = await storage.acquireWriter(signal);
+      writer = await guard(() => storage.acquireWriter(signal!));
       if (!writer || typeof writer.release !== 'function') throw new RuntimeFault('STATE_FAILED');
       if (signal.aborted) throw new RuntimeFault('CANCELLED');
-      repo = new JsonlSessionRepo({fileSystem: new NodeExecutionEnv({cwd: storage.cwd}), sessionsRoot: storage.directory});
-      const metadata = sessionId === undefined ? undefined : (await repo.list({cwd: storage.cwd}, BACKGROUND_CONTEXT)).find(m => m.id === sessionId);
+      repo = new JsonlSessionRepo({fileSystem: guardedSessionFiles(new NodeExecutionEnv({cwd: storage.cwd}), guard), sessionsRoot: storage.directory});
+      const metadata = sessionId === undefined ? undefined : (await guard(() => repo!.list({cwd: storage.cwd}, BACKGROUND_CONTEXT))).find(m => m.id === sessionId);
       if (sessionId !== undefined && !metadata) throw new RuntimeFault('INVALID_REQUEST');
       return await action(repo, metadata, signal);
     } catch (error) {throw error instanceof RuntimeFault ? error : new RuntimeFault('STATE_FAILED');}
     finally {
-      try {await repo?.close(BACKGROUND_CONTEXT);} finally {
-        try {await writer?.release();} catch {throw new RuntimeFault('STATE_FAILED');} finally {busy = false;}
+      try {await guard(async () => repo?.close(BACKGROUND_CONTEXT));} finally {
+        try {await guard(async () => writer?.release());} catch {throw new RuntimeFault('STATE_FAILED');} finally {busy = false;}
       }
     }
   }
   async function opened<T>(repo: JsonlSessionRepo, metadata: JsonlSessionMetadata, signal: AbortSignal,
-    action: (session: Session<JsonlSessionMetadata>) => Promise<T>): Promise<T> {
-    const session = await repo.open(metadata, withAbortSignal(signal, BACKGROUND_CONTEXT));
-    try {return await action(session);} finally {await session.close(BACKGROUND_CONTEXT);}
+    action: (session: Session<JsonlSessionMetadata>) => Promise<T>, guard: ControlGuard = directControl): Promise<T> {
+    const session = await guard(() => repo.open(metadata, withAbortSignal(signal, BACKGROUND_CONTEXT)));
+    try {return await action(session);} finally {await guard(() => session.close(BACKGROUND_CONTEXT));}
   }
   return {
     sessions: {
@@ -484,8 +506,9 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
         await repo.delete(metadata!, withAbortSignal(signal, BACKGROUND_CONTEXT));
       }),
     },
-    drive: (config, request, transport, signal, tools = [], activeModel = () => config, bind = () => {}, control = async () => {}) => {
+    drive: (config, request, transport, signal, tools = [], activeModel = () => config, bind = () => {}, control = async () => {}, guard = directControl) => {
       const r = request as SessionRunRequest & AgentRequest;
+      if (r.modelRecovery && settings.retry?.enabled) throw new RuntimeFault('INVALID_REQUEST');
       if (settings.deferred && !config.deferred) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
       if (!r.sessionId || r.checkpoint || r.saveCheckpoint || r.shouldYield ||
         (r.operation !== undefined && !['prompt', 'resume', 'skill', 'template', 'compact', 'navigate', 'abort'].includes(r.operation)) ||
@@ -499,16 +522,16 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
               await control(command);
               const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
               if (command.kind === 'snapshot') {
-                return snapshotLane(lane, ctx, command.includeContent);
+                return guard(() => snapshotLane(lane, ctx, command.includeContent));
               }
-              if (command.kind === 'abort') {const result = await lane.requestAbort(binding.operationId, ctx); if (!result.ok) throw new RuntimeFault('STATE_FAILED'); return {};}
-              if (command.kind === 'cancelQueued') {const result = await lane.cancelQueued(command.entryId, ctx); if (!result.ok) throw new RuntimeFault('STATE_FAILED'); return {cancelled: result.value.kind === 'cancelled'};}
+              if (command.kind === 'abort') {const result = await guard(() => lane.requestAbort(binding.operationId, ctx)); if (!result.ok) throw new RuntimeFault('STATE_FAILED'); return {};}
+              if (command.kind === 'cancelQueued') {const result = await guard(() => lane.cancelQueued(command.entryId, ctx)); if (!result.ok) throw new RuntimeFault('STATE_FAILED'); return {cancelled: result.value.kind === 'cancelled'};}
               if (typeof command.text !== 'string' || !command.text || Buffer.byteLength(command.text) > 1_048_576) throw new RuntimeFault('INVALID_REQUEST');
               // Persist authority first. A crash here leaves no queue; a crash after enqueue
               // leaves a queue with a durable owner. Never infer ownership on recovery.
-              await session.setValue(value<{taskId:string;purpose?:string;operationId:string}>('sdk.queue-authority.v1', r.branch ?? 'main'),
-                {taskId:request.taskId,operationId:binding.operationId,...(request.purpose === undefined ? {} : {purpose:request.purpose})}, ctx);
-              const result = await lane[command.kind](command.text, undefined, ctx);
+              await guard(() => session.setValue(value<{taskId:string;purpose?:string;operationId:string}>('sdk.queue-authority.v1', r.branch ?? 'main'),
+                {taskId:request.taskId,operationId:binding.operationId,...(request.purpose === undefined ? {} : {purpose:request.purpose})}, ctx));
+              const result = await guard(() => lane[command.kind](command.text, undefined, ctx));
               if (!result.ok) throw new RuntimeFault('STATE_FAILED');
               return {entryId: result.value.entryId};
             }};
@@ -517,12 +540,12 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
             }
           },
           async deactivate() {live = undefined; await controlTail;},
-        })));
+        }, guard), guard), guard);
     },
   };
 }
 
-async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transport: ModelTransport, signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig): Promise<string | {waiting: ConversationCheckpoint}> {
+async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transport: ModelTransport, signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig, guard: ControlGuard): Promise<string | {waiting: ConversationCheckpoint}> {
   let failure: unknown;
   const checkpointRequest = request as AgentRequest;
   let latest: ConversationCheckpoint | undefined;
@@ -546,13 +569,13 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
     latest = {version: '1.0', taskId: request.taskId, ...(request.purpose === undefined ? {} : {purpose: request.purpose}), messages: history, state, ...(inFlightToolId === undefined ? {} : {inFlightToolId})};
     if (!checkpointRequest.saveCheckpoint) return;
     if (signal.aborted) throw new RuntimeFault('CANCELLED');
-    try {await checkpointRequest.saveCheckpoint(structuredClone(latest), signal);}
+    try {await guard(() => checkpointRequest.saveCheckpoint!(structuredClone(latest!), signal));}
     catch {throw new RuntimeFault('STATE_FAILED');}
     if (signal.aborted) throw new RuntimeFault('CANCELLED');
   }
   const callIds = new Set(restoreHistory.flatMap(m=>(m.calls ?? []).map(c=>c.id))); 
-  const model = providerModel(config, request.limits.outputTokens);
-  const agent = new Agent({initialState: {model, ...(checkpointRequest.checkpoint ? {messages: fromCheckpoint({...checkpointRequest.checkpoint, messages: restoreHistory}, config, request.limits.outputTokens)} : {}), systemPrompt: request.system ?? '', thinkingLevel: request.thinkingLevel ?? 'off',
+  const model = providerModel(config, outputCap(request.limits));
+  const agent = new Agent({initialState: {model, ...(checkpointRequest.checkpoint ? {messages: fromCheckpoint({...checkpointRequest.checkpoint, messages: restoreHistory}, config, outputCap(request.limits))} : {}), systemPrompt: request.system ?? '', thinkingLevel: request.thinkingLevel ?? 'off',
     tools: tools.map(tool => ({name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as unknown as TSchema,
       ...(tool.executionMode === undefined ? {} : {executionMode: tool.executionMode}),
       execute: async (_id: string, args: unknown, toolSignal?: AbortSignal) => restoredResults.has(_id) ? {content:[{type:'text' as const,text:restoredResults.get(_id)!.text}],details:null} : ({
@@ -590,7 +613,7 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
         const replaying = replay;
         const reply: ModelReply = replaying ? {content: replaying.blocks ?? [...(replaying.text ? [{kind:'text' as const,text:replaying.text}] : []),
           ...(replaying.calls ?? []).map(call=>({kind:'tool' as const,...call}))],stop:'tools',usage:{inputTokens:0,outputTokens:0}} :
-          await transport({model: config, messages: messages(context), maxOutputTokens: request.limits.outputTokens, signal,
+          await transport({model: config, messages: messages(context), maxOutputTokens: outputCap(request.limits), signal,
             ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel})});
         replay = undefined;
         const calls = reply.content.filter(c => c.kind === 'tool');
@@ -607,7 +630,7 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
           catch {throw new RuntimeFault('INVALID_TOOL');}
           callIds.add(content.id);
         }
-        const chosen = providerModel(replaying?.origin ? {...activeModel(), ...replaying.origin} : activeModel(), request.limits.outputTokens);
+        const chosen = providerModel(replaying?.origin ? {...activeModel(), ...replaying.origin} : activeModel(), outputCap(request.limits));
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
           content: reply.content.map(toPiContent),
           stopReason: reply.stop === 'complete' ? 'stop' : reply.stop === 'tools' ? 'toolUse' : 'length', timestamp: Date.now(),

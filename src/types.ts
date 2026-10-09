@@ -25,12 +25,27 @@ export interface Limits {
   wallTimeMs: number;
   resourceUnits?: number;
 }
+/** Explicit cumulative policy; every listed protection is required, no implicit defaults. */
+export interface UncappedLimits {
+  cumulative: 'unlimited';
+  maxOutputTokens: number;
+  modelTimeoutMs: number;
+  toolTimeoutMs: number;
+  controlTimeoutMs: number;
+}
+export interface UncappedUsage extends Usage {
+  inputTokens: number;
+  /** Reserved output not yet settled, including unknown effects after interruption. */
+  reservedOutputTokens: number;
+}
 export interface Usage {
   modelCalls: number;
   toolCalls: number;
   outputTokens: number;
   resourceUnits: number;
   activeMs: number;
+  inputTokens?: number;
+  reservedOutputTokens?: number;
 }
 export interface ModelCall {
   id: string;
@@ -131,6 +146,8 @@ export interface RuntimeOptions {
 }
 /** Implementations must make claim/reserve/settle/release atomic per task. */
 export interface BudgetStore {
+  /** Explicit capability; absence rejects the new policy, never falls back to finite claim. */
+  claimUncapped?(taskId: string, runId: string, configuration: string, limits: UncappedLimits): Promise<UncappedBudgetLease>;
   claim(taskId: string, runId: string, configuration: string, limits: Limits): Promise<BudgetLease>;
 }
 export interface BudgetLease {
@@ -141,6 +158,11 @@ export interface BudgetLease {
   settleModel(reservedTokens: number, actualTokens: number): Promise<void>;
   reserveTool(units: number): Promise<void>;
   release(activeMs: number): Promise<void>;
+}
+export interface UncappedBudgetLease extends BudgetLease {
+  snapshot(): UncappedUsage;
+  reserveModelUpTo(maximumTokens: number): Promise<number>;
+  settleModelUsage(reservedTokens: number, usage: {inputTokens: number; outputTokens: number}): Promise<void>;
 }
 /** Host-owned durable conversation checkpoint; contains authorized content, not audit metadata. */
 export interface ConversationCheckpoint {
@@ -159,7 +181,9 @@ export interface BaseRequest {
   images?: readonly InputImage[];
   system?: string;
   contextVersions?: Readonly<Record<string, string>>;
-  limits: Limits;
+  limits: Limits | UncappedLimits;
+  /** Per logical model request, shared by fallback and retry. Never stacks with native retry. */
+  modelRecovery?: {extraAttempts: 0 | 1};
   signal?: AbortSignal;
   /** Defaults to sequential; Pi may force a batch to sequential for a tool override. */
   toolExecution?: ToolExecutionMode;

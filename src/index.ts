@@ -1,9 +1,10 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {drive, createSessionBackend} from './pi-adapter.ts';
 import {reasonOf, RuntimeFault, ProviderFailure} from './errors.ts';
+import {uncapped,outputCap} from './policy.ts';
 import {createMemoryBudgetStore} from './budget.ts';
 import {freeze, isJson, validateReply, validateRequest, validateCheckpoint} from './validation.ts';
-import type {AgentRequest, AuditEvent, BaseRequest, BudgetLease, JsonValue, ModelReply, RunResult, Runtime, RuntimeOptions, Tool, Usage, PurposeConfig, SessionRuntimeOptions, SessionRuntime, SessionBinding} from './types.ts';
+import type {AgentRequest, AuditEvent, BaseRequest, BudgetLease, JsonValue, ModelReply, RunResult, Runtime, RuntimeOptions, Tool, Usage, PurposeConfig, SessionRuntimeOptions, SessionRuntime, SessionBinding, UncappedBudgetLease} from './types.ts';
 export type * from './types.ts';
 export {createMemoryBudgetStore};
 export {createPiTransport, createProxyTransport, createExecutionTools, loadHarnessResources} from './pi-adapter.ts';
@@ -45,7 +46,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     const request: BaseRequest = freeze({...input,
       ...((input as AgentRequest).checkpoint ? {checkpoint: structuredClone((input as AgentRequest).checkpoint)} : {}),
       ...(purpose?.toolExecution === undefined ? {} : {toolExecution: purpose.toolExecution}),
-      ...(purpose?.thinkingLevel === undefined ? {} : {thinkingLevel: purpose.thinkingLevel}), limits: {...input.limits}, contextVersions: {...input.contextVersions}});
+      ...(purpose?.thinkingLevel === undefined ? {} : {thinkingLevel: purpose.thinkingLevel}), limits: {...input.limits}, ...(input.modelRecovery ? {modelRecovery:{...input.modelRecovery}} : {}), contextVersions: {...input.contextVersions}});
+    const protection = uncapped(request.limits) ? request.limits : undefined;
     const tools = (purpose?.tools ?? inputTools).map(tool => ({...tool, parameters: structuredClone(tool.parameters)}));
     const runId = randomUUID(), started = Date.now(), controller = new AbortController();
     const zero: Usage = {modelCalls: 0, toolCalls: 0, outputTokens: 0, resourceUnits: 0, activeMs: 0};
@@ -61,22 +63,39 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     const cancel = () => stop('CANCELLED');
     input.signal?.addEventListener('abort', cancel, {once: true});
     if (input.signal?.aborted) cancel();
-    const usage = () => {try {return lease ? {...lease.snapshot(), activeMs: lease.snapshot().activeMs + Date.now() - started} : {...zero};} catch {return {...zero};}};
-    const usageKnown = () => {try {return !!lease && !!lease.snapshot();} catch {return false;}};
+    const snapshot = (): Usage => {
+      try {
+        if (!lease) throw new RuntimeFault('STATE_FAILED');
+        const value = {...lease.snapshot()};
+        for (const key of ['modelCalls','toolCalls','outputTokens','resourceUnits','activeMs'] as const)
+          if (!Number.isSafeInteger(value[key]) || value[key] < 0) throw new RuntimeFault('STATE_FAILED');
+        if (protection && (!Number.isSafeInteger(value.inputTokens) || value.inputTokens! < 0 ||
+          !Number.isSafeInteger(value.reservedOutputTokens) || value.reservedOutputTokens! < 0 ||
+          value.reservedOutputTokens! > value.outputTokens)) throw new RuntimeFault('STATE_FAILED');
+        return value;
+      } catch {throw new RuntimeFault('STATE_FAILED');}
+    };
+    const usage = () => {const value = snapshot(); return {...value, activeMs: value.activeMs + Date.now() - started};};
     const failed = (error: unknown): RunResult<T> => {
       const reason = fault?.reason ?? reasonOf(error);
+      let observed = {...zero}, known = false;
+      try {observed = usage(); known = true;} catch { /* Unavailable history is not zero consumption. */ }
       return {taskId: request.taskId, runId, status: reason === 'CANCELLED' ? 'cancelled' :
-        ['AUTHORITY_REQUIRED', 'TASK_BUSY', 'CONFIGURATION_CHANGED', 'BUDGET_EXHAUSTED'].includes(reason) ? 'blocked' : 'failed', reason, usage: usage(), usageKnown: usageKnown()};
+        ['AUTHORITY_REQUIRED', 'TASK_BUSY', 'CONFIGURATION_CHANGED', 'BUDGET_EXHAUSTED'].includes(reason) ? 'blocked' : 'failed', reason, usage: observed, usageKnown: known};
     };
+    async function controlled<V>(operation:()=>Promise<V>):Promise<V> {
+      const deadline=protection ? setTimeout(()=>stop('DEADLINE_EXCEEDED'),protection.controlTimeoutMs) : undefined;
+      try{return await operation();}finally{clearTimeout(deadline);}
+    }
     async function append(kind: AuditEvent['kind'], extra: Partial<AuditEvent> = {}, terminal = false) {
       if (!terminal) assertOpen();
       const event: AuditEvent = Object.freeze({version: '1.0', taskId: request.taskId, runId, sequence: ++sequence, kind, at: new Date().toISOString(),
         provider: current().model.provider, model: current().model.id, contextVersions: Object.freeze({...request.contextVersions}),
-        ...(routed ? {attempt} : {}), ...(sessionBinding ? {session: sessionBinding} : {}), ...extra});
+        ...(routed || request.modelRecovery ? {attempt} : {}), ...(sessionBinding ? {session: sessionBinding} : {}), ...extra});
       // Parallel tools still present one ordered append stream to the host sink.
       const pending = auditTail.then(async () => {
         if (!terminal) assertOpen();
-        try {await options.audit.append(event, controller.signal);} catch {fault ??= new RuntimeFault('AUDIT_FAILED'); throw fault;}
+        try {await controlled(()=>options.audit.append(event, controller.signal));} catch {fault ??= new RuntimeFault('AUDIT_FAILED'); throw fault;}
       });
       auditTail = pending.catch(() => {});
       await pending;
@@ -85,7 +104,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     }
     async function authorize(action: Parameters<RuntimeOptions['authorize']>[0]) {
       assertOpen();
-      try {if (!await options.authorize({...action, ...(sessionBinding ? {session: sessionBinding} : {})}, controller.signal)) throw new RuntimeFault('AUTHORITY_REQUIRED');}
+      try {if (!await controlled(()=>options.authorize({...action, ...(sessionBinding ? {session: sessionBinding} : {})}, controller.signal))) throw new RuntimeFault('AUTHORITY_REQUIRED');}
       catch {fault ??= new RuntimeFault('AUTHORITY_REQUIRED'); throw fault;}
       assertOpen();
     }
@@ -95,8 +114,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       physical.add(pending);
       try {const value = await pending; assertOpen(); return value;} finally {physical.delete(pending);}
     }
-    async function state<V>(operation: () => Promise<V>): Promise<V> {
-      try {return await operation();} catch (error) {throw error instanceof RuntimeFault ? error : new RuntimeFault('STATE_FAILED');}
+    async function state<V>(operation: () => Promise<V>, checkSnapshot = true): Promise<V> {
+      try {const result = await controlled(operation); if (lease && checkSnapshot) snapshot(); return result;} catch (error) {throw error instanceof RuntimeFault ? error : new RuntimeFault('STATE_FAILED');}
     }
     const work = (async (): Promise<RunResult<T>> => {try {
       assertOpen();
@@ -135,29 +154,39 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
         if (identities.has(identity)) throw new RuntimeFault('INVALID_REQUEST');
         identities.add(identity);
       }
-      timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), request.limits.wallTimeMs);
+      if (!uncapped(request.limits)) timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), request.limits.wallTimeMs);
       const configuration = purposePlan ? {purposes: purposePlan, limits: request.limits} : {...(routed ? {route: candidates.map(c => c.model)} : {model}), limits: request.limits,
         ...(request.toolExecution === undefined ? {} : {toolExecution: request.toolExecution}),
         ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
         tools: tools.map(({execute: _execute, ...definition}) => definition)};
-      lease = await state(() => budgets.claim(request.taskId, runId, digest(configurationExtension === undefined ? configuration : {configuration, extension: configurationExtension}), request.limits));
+      const signature=digest({...configuration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})});
+      const configurationId=configurationExtension===undefined ? signature : digest({configuration:{...configuration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})},extension:configurationExtension});
+      if(uncapped(request.limits)) {
+        if(!budgets.claimUncapped)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
+        const limits=request.limits;
+        lease=await state(()=>budgets.claimUncapped!(request.taskId,runId,configurationId,limits));
+        if(!lease.reserveModelUpTo || typeof (lease as UncappedBudgetLease).settleModelUsage!=='function')throw new RuntimeFault('STATE_FAILED');
+        snapshot();
+      } else {const limits=request.limits;lease = await state(() => budgets.claim(request.taskId, runId, configurationId, limits));}
       assertOpen();
       clearTimeout(timer);
-      timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), Math.max(0, request.limits.wallTimeMs - lease.snapshot().activeMs - (Date.now() - started)));
+      if(!uncapped(request.limits)) timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), Math.max(0, request.limits.wallTimeMs - snapshot().activeMs - (Date.now() - started)));
       await append('run.started');
       const text = await driver(current().model, request, async initialRequest => {
+        let extraAttempts=0;
         for (;;) {
           assertOpen();
+          snapshot();
           const candidate = current();
-          const maximum = Math.min(initialRequest.maxOutputTokens, candidate.model.maxOutputTokens ?? request.limits.outputTokens,
-            request.limits.outputTokens - lease!.snapshot().outputTokens);
+          const maximum = Math.min(initialRequest.maxOutputTokens, candidate.model.maxOutputTokens ?? outputCap(request.limits),
+            uncapped(request.limits) ? outputCap(request.limits) : request.limits.outputTokens - snapshot().outputTokens);
           if (maximum < 1) throw new RuntimeFault('BUDGET_EXHAUSTED');
           if (request.thinkingLevel && request.thinkingLevel !== 'off' && candidate.model.protocol === 'anthropic-messages' && maximum < 2048)
             throw new RuntimeFault('BUDGET_EXHAUSTED');
           if (initialRequest.messages.some(m => m.images?.length) && !candidate.model.input?.includes('image')) throw new RuntimeFault('INVALID_REQUEST');
           const modelRequest = freeze({...initialRequest, model: candidate.model, maxOutputTokens: maximum});
           await authorize({kind: 'model', taskId: request.taskId, runId, request: modelRequest});
-          const capped = routed || candidate.model.maxOutputTokens !== undefined || maximum < request.limits.outputTokens - lease!.snapshot().outputTokens;
+          const capped = uncapped(request.limits) || routed || candidate.model.maxOutputTokens !== undefined || maximum < request.limits.outputTokens - snapshot().outputTokens;
           if (capped && !lease!.reserveModelUpTo) throw new RuntimeFault('INVALID_REQUEST');
           const reserved = await state(() => capped ? lease!.reserveModelUpTo!(maximum) : lease!.reserveModel());
           if (reserved !== maximum) throw new RuntimeFault('STATE_FAILED');
@@ -165,31 +194,48 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           await append('model.admitted', {digest: digest(modelRequest.messages)});
           let reply: ModelReply;
           try {
-            reply = freeze(structuredClone(await effect(() => candidate.transport({...modelRequest, maxOutputTokens: reserved}))));
+            reply = freeze(structuredClone(await effect(async () => {
+              const attemptController=new AbortController();let expired=false,settled=false;
+              const deadline=protection ? setTimeout(()=>{expired=true;attemptController.abort();setImmediate(()=>{if(!settled)stop('DEADLINE_EXCEEDED');});},protection.modelTimeoutMs) : undefined;
+              try {const result=await candidate.transport({...modelRequest,maxOutputTokens:reserved,signal:AbortSignal.any([modelRequest.signal,controller.signal,attemptController.signal])});
+                if(expired)throw new RuntimeFault('DEADLINE_EXCEEDED');return result;
+              } catch(error){if(expired)throw new RuntimeFault('DEADLINE_EXCEEDED');throw error;}
+              finally{settled=true;clearTimeout(deadline);}
+            })));
           } catch (error) {
             assertOpen();
-            if (!(error instanceof ProviderFailure) ||
-              !['quota','rate-limit','unavailable','network'].includes(error.category)) throw error;
-            await append('model.finished', {reason: 'MODEL_FAILED', failureCategory: error.category});
-            if(candidateIndex + 1 >= candidates.length)throw error;
-            candidateIndex++;
+            const timedOut=error instanceof RuntimeFault && error.reason==='DEADLINE_EXCEEDED';
+            if (!timedOut && (!(error instanceof ProviderFailure) || !['quota','rate-limit','unavailable','network'].includes(error.category))) throw error;
+            await append('model.finished', {reason: timedOut?'DEADLINE_EXCEEDED':'MODEL_FAILED', ...(!timedOut ? {failureCategory:(error as ProviderFailure).category}: {})});
+            if(request.modelRecovery) {
+              if(extraAttempts>=request.modelRecovery.extraAttempts)throw error;
+              if(candidateIndex+1<candidates.length)candidateIndex++;
+              else if(error instanceof ProviderFailure && error.category==='quota')throw error;
+              extraAttempts++;
+            } else {if(timedOut || candidateIndex+1>=candidates.length)throw error;candidateIndex++;}
             continue; // Failed unknown usage keeps its reservation; tools are not restarted.
           }
           validateReply(reply);
           if (reply.stop === 'deferred') {if (!candidate.model.deferred || routed) throw new RuntimeFault('CAPABILITY_UNAVAILABLE'); await append('model.finished'); return reply;}
-          await state(() => lease!.settleModel(reserved, reply.usage.outputTokens));
-          assertOpen(); await append('model.finished'); return reply;
+          await state(() => protection ? (lease as UncappedBudgetLease).settleModelUsage(reserved,reply.usage) : lease!.settleModel(reserved, reply.usage.outputTokens));
+          assertOpen(); await append('model.finished');
+          if (reply.usage.outputTokens > reserved) throw new RuntimeFault('BUDGET_EXHAUSTED');
+          return reply;
         }
       }, controller.signal, tools.map(tool => ({...tool, execute: async (args, signal, invocation): Promise<JsonValue> => {
         try {
         freeze(args);
         freeze(invocation);
         const identity = invocation ? {sessionId:invocation.sessionId,branch:invocation.branch,operationId:invocation.operationId,invocationId:invocation.invocationId,toolCallId:invocation.toolCallId} : undefined;
+        snapshot();
         await authorize({kind: 'tool', taskId: request.taskId, runId, name: tool.name, effect: tool.effect, arguments: args, ...(identity ? {invocation:identity} : {})});
         await state(() => lease!.reserveTool(tool.resourceUnits));
         await append('tool.admitted', {toolName: tool.name, digest: digest(args), ...(identity ? {invocation:identity} : {})});
         let value: JsonValue;
-        try {value = await effect(() => tool.execute(args, signal, invocation));} catch {fault ??= new RuntimeFault('TOOL_FAILED'); throw fault;}
+        try {value = await effect(async () => {
+          const deadline=protection ? setTimeout(()=>stop('DEADLINE_EXCEEDED'),protection.toolTimeoutMs) : undefined;
+          try{return await tool.execute(args,signal,invocation);}finally{clearTimeout(deadline);}
+        });} catch {fault ??= new RuntimeFault('TOOL_FAILED'); throw fault;}
         assertOpen();
         if (!isJson(value) || Buffer.byteLength(JSON.stringify(value)) > 1_048_576) {fault = new RuntimeFault('TOOL_FAILED'); throw fault;}
         const captured = freeze(structuredClone(value));
@@ -198,7 +244,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       }})), () => current().model, binding => {sessionBinding = Object.freeze({...binding});}, async command => {
         await authorize({kind: 'control', taskId: request.taskId, runId, command});
         await append('session.control', {digest: digest(command)});
-      });
+      }, controlled);
       assertOpen();
       if (typeof text !== 'string' && 'suspended' in text) {
         await authorize({kind:'publish',taskId:request.taskId,runId});
@@ -225,7 +271,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       return result;
     } finally {
       await Promise.allSettled([...physical]);
-      if (lease) await state(() => lease!.release(Date.now() - started));
+      if (lease) await state(() => lease!.release(Date.now() - started), false);
     }})();
     const completion = work.then(() => {}, () => {});
     // Never replace the owner's pending handle with a competing rejected claim.

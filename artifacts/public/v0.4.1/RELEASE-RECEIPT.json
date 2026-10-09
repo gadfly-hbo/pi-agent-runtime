@@ -1,0 +1,40 @@
+{
+  "version": "0.4.1",
+  "standard": "v0.3",
+  "package": {
+    "file": "pi-agent-runtime-0.4.1.tgz",
+    "sha256": "1ddace3a5b7ff97e80627dc4660d9f300ac402a4bfc67f43144380d3352d6da5",
+    "bytes": 102550
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1"
+  },
+  "validation": {
+    "corePass": 185,
+    "coreSkipped": 0,
+    "uiPass": 2,
+    "typecheck": "PASS",
+    "build": "PASS",
+    "independentSourceReview": "PASS",
+    "extractedPackageConsumer": "PASS",
+    "legacyConsumer": "PASS",
+    "versionCorrection": "runtime/test/tool sources unchanged; build and packed consumers rerun"
+  },
+  "sourceSha256": {
+    "src/index.ts": "a826be89a5baf1f09133309f4ebcb6c50151add1aff1004621b39f41107be42c",
+    "src/budget.ts": "f69d46f242669cec7fee5bd1ffafa6a77630ffde9467260850d6bc87b1e54edd",
+    "src/pi-adapter.ts": "ee8aab1a54688aac3630a099cd356e554026d3679068d95652a033c5e9f36c56",
+    "src/policy.ts": "6f1f8916579db74ccef6cfe683eaed205e05bb943ec5dd936b871fcc66a8002a",
+    "src/types.ts": "56d19bbaf3f38a2956bd764036b82b7b1da121d007ed10369df48f7a5a05b6a9",
+    "src/validation.ts": "b215317199148bb87098586fdb6721c11833f8d029bc1ac81431194061d604bf"
+  },
+  "notEstablishedByThisReceipt": [
+    "JuanerAI production adoption",
+    "production migration or activation",
+    "real data",
+    "deployment",
+    "new real Provider validation"
+  ],
+  "artifactPolicy": "Publish the fixed reviewed 0.4.1 tgz without rebuilding it. Original 0.4.0 and earlier local candidate evidence remain unchanged."
+}
