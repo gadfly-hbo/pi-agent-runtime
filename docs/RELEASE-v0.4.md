@@ -1,6 +1,6 @@
 # SDK 0.4.0：原生 Harness 接线合同
 
-状态：共享源码完整合成验收与独立只读复审 PASS；以本地不可变 tgz 交付，最终字节身份见随包 RELEASE-RECEIPT.json。未进行 npm/Git 远程发布。精确依赖保持 `pi-ai + pi-agent-core 0.86.1`，标准仍为 v0.3。此次新增公开持久会话与控制合同使用 0.4.0，不覆盖历史 0.3.2 包。
+状态：共享源码完整合成验收与独立只读复审 PASS；原本地不可变 tgz 已原样发布到 GitHub v0.4.0 Release；公开字节身份见 artifacts/public/v0.4.0/RELEASE-RECEIPT.json。Git首次提交与双设备同步不改变原包，未发布到npm注册表。精确依赖保持 `pi-ai + pi-agent-core 0.86.1`，标准仍为 v0.3。此次新增公开持久会话与控制合同使用 0.4.0，不覆盖历史 0.3.2 包。
 
 ## 已实现的完整机制范围
 

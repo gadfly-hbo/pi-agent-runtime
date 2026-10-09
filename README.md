@@ -72,7 +72,7 @@ await runtime.runAgent({
 
 thinking 的协议续接块不进入普通审计或最终答案；跨模型时 Pi 可能把未屏蔽思考转换为文本上下文，宿主每次模型授权必须覆盖这部分外发。并行不是事务，已启动的效果不能因同批失败而撤销。当前设置 UI 保留宿主声明的 reasoning 能力，但不提供任务级并行/thinking 开关；这些由产品任务策略选择，不增加配置页面复杂度。
 
-运行此真实模型示例之前，必须单独批准 Provider、凭据、发送内容、预算及数据边界。可直接运行的完整离线示例在 [examples/offline.ts](examples/offline.ts)。交付入口是固定 SHA-256 的本地 `.tgz`；没有配置远程仓库或 npm 发布渠道。完整0.4.0验证不沿用历史 Provider预算或通过状态。
+运行此真实模型示例之前，必须单独批准 Provider、凭据、发送内容、预算及数据边界。可直接运行的完整离线示例在 [examples/offline.ts](examples/offline.ts)。交付入口是固定 SHA-256 的本地 `.tgz`；现已通过 GitHub Release 分发；未发布到 npm 注册表。完整0.4.0验证不沿用历史 Provider预算或通过状态。
 
 ## 转发给产品开发 Agent 的接入 Prompt
 
