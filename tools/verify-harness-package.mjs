@@ -15,7 +15,7 @@ for(const file of readdirSync(join(installed,'dist')).filter(f=>f.endsWith('.d.t
 writeFileSync(join(directory,'consumer.mjs'),`
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {createSessionRuntime,createMemoryBudgetStore,createLocalExecutionEnvironment,createExecutionTools,loadHarnessResources,createProxyTransport} from 'pi-agent-runtime';
+import {createRuntime,createSessionRuntime,createMemoryBudgetStore,createLocalExecutionEnvironment,createExecutionTools,loadHarnessResources,createProxyTransport} from 'pi-agent-runtime';
 const root=await mkdtemp(join(tmpdir(),'packed-session-'));
 try {
  const budgets=createMemoryBudgetStore();let calls=0;
@@ -29,11 +29,21 @@ try {
  const runtime=createSessionRuntime(options),session=await runtime.create();const request={taskId:'stable-packed',sessionId:session.id,prompt:'write/read fixture',tools,limits:{modelCalls:10,toolCalls:3,outputTokens:100,wallTimeMs:5000}};
  assert.equal((await runtime.run(request)).status,'succeeded');const resumed=await createSessionRuntime(options).run({...request,prompt:'consume saved result'});
  assert.equal(resumed.status,'succeeded');assert.equal(resumed.value,'consumed PACKED-97');assert.equal(resumed.usage.modelCalls,4);assert.equal(resumed.usage.toolCalls,2);
- console.log('PACKED_NATIVE_CONSUMER_PASS');
+ const limits={cumulative:'unlimited',maxOutputTokens:4,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
+ const plain=createRuntime({...options,transport:async r=>{assert.equal(r.maxOutputTokens,4);return{content:[{kind:'text',text:'42'}],stop:'complete',usage:{inputTokens:3,outputTokens:2}};}});
+ const common={taskId:'packed-uncapped',prompt:'go',limits,modelRecovery:{extraAttempts:1}};
+ for(let i=0;i<6;i++)assert.equal((await plain.runText(common)).status,'succeeded');
+ assert.equal((await plain.runWorker({...common,validate:v=>v})).status,'succeeded');
+ const agent=await plain.runAgent({...common,tools:[]});assert.equal(agent.status,'succeeded');assert.equal(agent.usage.modelCalls,8);assert.equal(agent.usage.inputTokens,24);assert.equal(agent.usage.outputTokens,16);assert.equal(agent.usage.reservedOutputTokens,0);
+ const native=await createSessionRuntime(options).run({...request,taskId:'packed-uncapped-session',limits,modelRecovery:{extraAttempts:1}});assert.equal(native.status,'succeeded');assert.equal(native.value,'consumed PACKED-97');
+ console.log('PACKED_NATIVE_AND_UNCAPPED_CONSUMER_PASS');
 } finally {await rm(root,{recursive:true,force:true});}
 `);
 writeFileSync(join(directory,'consumer.mts'),`import {createSessionRuntime,createExecutionTools,createLocalExecutionEnvironment,createProxyTransport,loadHarnessResources} from 'pi-agent-runtime';
-import type {SessionRuntimeOptions,HarnessControl,ToolExecutionContext,ExecutionEnvironment} from 'pi-agent-runtime';
+import type {SessionRuntimeOptions,HarnessControl,ToolExecutionContext,ExecutionEnvironment,UncappedLimits,UncappedBudgetLease,BaseRequest} from 'pi-agent-runtime';
+const limits:UncappedLimits={cumulative:'unlimited',maxOutputTokens:4,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
+const request:BaseRequest={taskId:'typed',prompt:'go',limits,modelRecovery:{extraAttempts:1}};
+const ledger=(lease:UncappedBudgetLease)=>lease.settleModelUsage(4,{inputTokens:3,outputTokens:2});void [request,ledger];
 const control:HarnessControl={kind:'snapshot',includeContent:true};
 const make=(options:SessionRuntimeOptions)=>createSessionRuntime(options);void [control,make,createExecutionTools,createLocalExecutionEnvironment,createProxyTransport,loadHarnessResources];
 `);

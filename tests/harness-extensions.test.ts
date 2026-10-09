@@ -35,8 +35,8 @@ test('HE03 native navigation and branch history change subsequent model context 
  await runtime.run({...request,sessionId:session.id,prompt:'AFTER-NAV'});assert.ok(!seen.at(-1)!.includes('SECOND'));
  await runtime.update(session.id,{kind:'name',name:'Synthetic session'});await runtime.update(session.id,{kind:'label',entryId:first[0]!.id,label:'First evidence'});
 });
-test('HE04 native deferred suspension survives reopening, guarded polling and cancellation use the same task ledger',async t=>{
- const {options,request}=await fixture(t);options.model.deferred=true;options.model.maxOutputTokens=10;options.harness={deferred:true};const actions:string[]=[];
+for(const policy of ['finite','uncapped'] as const) test(`HE04 native deferred suspension survives reopening, guarded polling and cancellation use the same task ledger (${policy})`,async t=>{
+ const {options,request:base}=await fixture(t);const request={...base,limits:policy==='finite'?base.limits:{cumulative:'unlimited' as const,maxOutputTokens:10,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000}};options.model.deferred=true;options.model.maxOutputTokens=10;options.harness={deferred:true};const actions:string[]=[];
  options.transport=async r=>{actions.push(r.deferred?.action ?? 'none');if(r.deferred?.action==='start')return{content:[],stop:'deferred',deferred:{id:'synthetic-request'},usage:{inputTokens:0,outputTokens:0}};return{content:[{kind:'text',text:r.deferred?.action==='cancel'?'cancelled':'deferred result'}],stop:'complete',usage:{inputTokens:1,outputTokens:1}};};
  const runtime=createSessionRuntime(options),session=await runtime.create();const started=await runtime.run({...request,sessionId:session.id});assert.equal(started.status,'suspended',JSON.stringify(started));
  assert.ok((await runtime.inspect(session.id)).pending);
@@ -60,8 +60,8 @@ test('HE06 native durable tool progress/memo and storage failure preserve the ac
  const result=await runtime.run({...request,sessionId:session.id,tools});assert.equal(result.status,'failed');assert.equal(effects,1);assert.equal(calls,1);assert.equal(result.usage.toolCalls,1);
  options.reconcile=async()=> 'unknown';const recovery=await createSessionRuntime(options).run({...request,sessionId:session.id,tools,operation:'resume',prompt:''});assert.equal(recovery.status!=='succeeded'&&recovery.reason,'STATE_FAILED');assert.equal(effects,1);assert.equal(calls,1);
 });
-test('HE07 native tool memo/update is durable and navigation summary reaches the next model',async t=>{
- const {options,request}=await fixture(t);let calls=0,summarized=false;
+for(const policy of ['finite','uncapped'] as const) test(`HE07 native tool memo/update is durable and navigation summary reaches the next model (${policy})`,async t=>{
+ const {options,request:base}=await fixture(t);const request={...base,limits:policy==='finite'?base.limits:{cumulative:'unlimited' as const,maxOutputTokens:10,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000}};let calls=0,summarized=false;
  options.transport=async r=>{const text=r.messages.map(m=>m.text).join('\n');calls++;if(calls===1)return{content:[{kind:'tool',id:'one',name:'memo',arguments:{}}],stop:'tools',usage:{inputTokens:1,outputTokens:1}};
  if(text.includes('summar')){summarized=true;return{content:[{kind:'text',text:'BRANCH-SUMMARY-71'}],stop:'complete',usage:{inputTokens:1,outputTokens:1}};}
  return{content:[{kind:'text',text:'71'}],stop:'complete',usage:{inputTokens:1,outputTokens:1}};};

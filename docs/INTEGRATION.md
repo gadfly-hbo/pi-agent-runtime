@@ -16,9 +16,9 @@
 
 接口见 `src/types.ts`，参考实现见 `src/budget.ts`。configuration 是模型、limits、工具声明及显式 toolExecution/thinkingLevel 的 SHA-256；同任务改变这些必须拒绝，而不能静默放宽。省略新字段时保持旧签名结构；显式填写默认值也构成配置身份变化。prompt、system、contextVersions 可按新运行更新并记录；这不构成业务计划批准。
 
-reserveModel 返回本次剩余额度，并先扣模型次数、1 resourceUnit、全部 token 预留。已知合法用量再结算剩余；未知/失败/取消保留额度。工具先按声明扣工具次数及 units，不因失败退款。wallTimeMs 是累计运行占用上限（含授权/审计/等待）；不是每次独立重置的额度。
+旧有限模式 reserveModel 返回本次剩余额度，并先扣模型次数、1 resourceUnit、全部 token 预留。已知合法用量再结算剩余；未知/失败/取消保留额度。工具先按声明扣工具次数及 units，不因失败退款。wallTimeMs 是累计运行占用上限（含授权/审计/等待）；不是每次独立重置的额度。
 
-snapshot 必须同步返回安全的副本且不执行 IO；claim/reserve/settle/release 可异步，必须保持原子性和 owner 隔离。release 成功表示占用/累计时间已可靠结算；失败不能返回成功成果。持久化适配器还需有崩溃后的未知状态策略，不能过期后盲目释放可能仍运行的外部效果。本轮未实现或验证持久化 Adapter。
+snapshot 必须同步返回安全的副本且不执行 IO；claim/reserve/settle/release 可异步，必须保持原子性和 owner 隔离。release 成功表示占用/累计时间已可靠结算；失败不能返回成功成果。持久化适配器还需有崩溃后的未知状态策略，不能过期后盲目释放可能仍运行的外部效果。SDK 不提供生产持久账本实现；合成跨进程宿主夹具已验证协议，产品仍须实现自己的原子持久 Adapter。
 
 `usageKnown` 为 false 时使用量不可用。为 true 时 outputTokens 仍可能含保守预留；resourceUnits 是资源单位，不是元或美元。HTTP transport 对缺失/零 output usage 保守计入本次 token 上限，不假定调用免费。实际账单封顶需要宿主供应商配额及计费策略，未在本轮实现。
 
@@ -74,3 +74,42 @@ const result = await runtime.run({sessionId: session.id, taskId, prompt, limits,
 活跃运行可 control(steer/followUp/nextRun/cancelQueued/abort/snapshot)。运行结束或重启后，原队列 Task/purpose 还可 control(snapshot/cancelQueued)，不会为了撤回而先启动模型；需显式传回 purpose，缺失/改绑拒绝。可靠审计失败不取消队列。普通历史读取用 history/inspect。
 
 createExecutionTools 复用原生四种工具；宿主显式提供受限环境和工具名单。本地后端可选 macOS 单进程 sandbox（禁止fork/网络）；丰富计算后端由产品提供，不能把文件/进程函数当成自动具备数据权限。
+
+
+## SDK0.4.1：JuanerAI 累计不封顶接法
+
+先固定 0.4.1 包及 hash；本节说明接法，不表示 JuanerAI 已安装/采用。`createSessionRuntime`、Worker/Text/Agent、预声明用途集合共用同一策略入口：
+
+```ts
+// 以下值来自 JuanerAI 已生效的单次保护配置；此示例不规定数值或生产默认值。
+const limits = {
+  cumulative: 'unlimited' as const,
+  maxOutputTokens: approvedPerRequestOutputTokens,
+  modelTimeoutMs: approvedModelRequestTimeoutMs,
+  toolTimeoutMs: approvedToolCallTimeoutMs,
+  controlTimeoutMs: approvedControlIoTimeoutMs,
+};
+const result = await sessionRuntime.run({
+  taskId: stableLedgerTaskId,
+  sessionId: nativeSessionId,
+  prompt: approvedPrompt,
+  tools: authorizedProductTools,
+  limits,
+  modelRecovery: {extraAttempts: 1},
+});
+// composition root 的 harness.retry 必须关闭（省略时默认关闭）。
+// 所有单次参数必须存在；缺失 INVALID_REQUEST，不套用示例或历史预算。
+```
+
+宿主 `BudgetStore.claimUncapped(taskId, runId, configuration, limits)` 原子比较配置并取得独占 lease，返回 `UncappedBudgetLease`。只实现旧 claim 的 store 返回 CAPABILITY_UNAVAILABLE，不自动退回内存。新 lease 的原子语义：
+
+- `reserveModelUpTo(n)`：模型次数 +1、resourceUnits +1、outputTokens +n、reservedOutputTokens +n；n 为本次有限输出上限，不取累计剩余额度。
+- `settleModelUsage(n, {inputTokens,outputTokens})`：保留并结算已知真实量，累计输入 +input，累计输出 -n+output，未结算预留 -n。即使 output>n，也须记录真实量；SDK 随后拒绝超单次输出成功。不能把这种已知消费伪装 UNKNOWN。
+- `reserveTool(units)`：工具次数 +1、资源单位 +units，失败也不退款。`release(ms)` 增加累计活动时间、可靠释放 owner；时间包含控制等待与物理取消后的等待，不因下一 run 清零。
+- `snapshot()` 同步返回安全副本，必须含安全整数 inputTokens/reservedOutputTokens。未知请求继续保留完整预留；deferred 的 start/poll/cancel 分别计次，未确认初始消费不凭后续回复退款。usageKnown=false 的零占位绝不表示没有历史。
+
+新字段和 modelRecovery 进入配置 hash；旧有限、未提供新字段时原 hash 形状和 claim 接口保持。旧 Task 直接换 limits 返回 CONFIGURATION_CHANGED。宿主迁移需显式批准，确认无活动 lease、核查外部回执和 UNKNOWN，事务保留旧新配置身份、全部累计用量及审计关联；没有安全迁移实现时保留旧任务策略。不能借新 Task ID/Fork 抹掉旧消费。回滚使用旧有限任务/旧精确包；0.4.0 不能消费新无限策略，不把新版任务账本改回零。
+
+每个逻辑模型请求最多额外一次：优先下一个备用；无备用时允许可恢复故障/已结束的超时请求重试当前模型；quota 且无备用不重试。原生 retry 同时启用返回 INVALID_REQUEST。取消、权限/账本/审计故障、无效输出不触发额外请求。模型单次超时先取消；当前事件循环中的 Promise 清理已完成才可重试，仍未结束则整次 run 停止并保留 lease，稍后才完成也不自动重发。
+
+控制超时覆盖运行内授权、审计、账本、checkpoint、恢复核账/绑定、扩展 async hook、JSONL 文件操作与行读取、运行中队列控制。每次 IO 各自计时，不给 lane.drive 设置累计截止。无活动 run 的 create/list/history/fork 等管理入口没有任务 limits，仍由宿主控制访问、取消和运维等待；同步 CPU 阻塞须宿主隔离。通知 observer 不作执行门。文件/进程环境的 timeoutMs/maxFileBytes/maxOutputBytes 与任务累计策略无关。

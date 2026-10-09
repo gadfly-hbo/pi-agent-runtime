@@ -1,4 +1,4 @@
-# Pi Harness 接线与验收台账：SDK 0.4.0
+# Pi Harness 接线与验收台账：SDK 0.4.0 + 0.4.1 策略增量
 
 日期：2026-10-09。范围为精确 `pi-agent-core + pi-ai 0.86.1` 的正式 Harness 机制，标准维持 v0.3。共享层状态与真实产品采用分列；发布身份以 RELEASE-v0.4.md 和发布收据为准。
 
@@ -53,3 +53,19 @@
 当前完整合成命令：`PI_RUN_OS_SANDBOX_TESTS=1 PI_RUN_LOCAL_PROXY_TESTS=1 npm run verify`。证据在 `artifacts/full-harness-20261009-001/`，包括首次失败、修复回归、独立评审和最终包消费者。默认 npm test 会跳过需明确宿主执行的 OS/loopback 两项；最终完整验收不能用默认跳过代替。
 
 SDK 机制通过不表示 JuanerAI Analysis IR、真实专业质量、生产账本或双模型验收通过。Provider、真实数据、Mini 采用/启用均未运行。CLI、主题、命令系统、包管理与长期 Memory 均不属于此次 Harness 交付。
+
+
+## SDK0.4.1 累计策略增量
+
+原生能力沿用上表接线；新公开契约 UncappedLimits/UncappedBudgetLease 不含 Pi 类型。0.4.0 历史证据不改写；当前发布/验证结果见 RELEASE-v0.4.1.md。
+
+| 覆盖 | 当前执行证据 | 产品状态 |
+|---|---|---|
+| Worker/Text/Agent、同任务多轮、工具累计 token/time/resource | UB01/03；无隐藏累计截止，单次参数仍生效 | JuanerAI 待采用 |
+| 有限兼容、显式策略、授权迁移身份 | UB06、原预算/用途/主备回归、打包旧消费者 | 其他宿主不强制迁移 |
+| 共用一次额外请求；超时/迟到/物理占用 | UB02/04/05/09/11/13 | 需关闭 native retry |
+| 账本/审计失败、已知超单次用量、控制/存储超时 | UB07/08/10/12/15 | 宿主持久 Adapter 仍需接线 |
+| 原生会话、Fork、手动/自动压缩、分支摘要、deferred | NS01/08/09、HE04/07 同时跑有限与不封顶；摘要进入后续真实请求 | 无新增生产 Provider 验证 |
+| 进程重开、硬退出未知、恢复拒绝 | UB14：真实 Node 进程和 JSONL，消费73、同账本历史/UNKNOWN 保留，无免费重放 | 合成宿主，非产品迁移实现 |
+
+运行内 native JSONL FileSystem（含逐行读取）在内部 Adapter 逐次接控制超时；不改写原生 Session/循环/压缩引擎。空闲会话管理仍无任务限额，宿主负责其取消和运维等待。

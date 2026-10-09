@@ -1,8 +1,10 @@
 # Pi Agent 接入基础包
 
-跨产品统一接法与运行机制，业务能力按产品扩展。SDK 当前为 `0.4.0` Harness 本地交付版本，直接依赖 `pi-ai + pi-agent-core` **精确 0.86.1**，标准维持 v0.3。不可变包身份以 [0.4.0合同](docs/RELEASE-v0.4.md) 和冻结包收据为准。
+跨产品统一接法与运行机制，业务能力按产品扩展。SDK 当前交付版本为 `0.4.1` 累计策略兼容增量，直接依赖 `pi-ai + pi-agent-core` **精确 0.86.1**，标准维持 v0.3。本轮状态见 [0.4.1说明](docs/RELEASE-v0.4.1.md)；已发布0.4.0包与历史证据保持不变。
 
 原生持久会话、分支/恢复、Skills/模板、自动压缩、队列控制、工具与受限执行环境、观测扩展及条件模型能力均已接入共享层；[逐项台账](docs/NATIVE-HARNESS-COVERAGE.md) 列明配置、消费者和验证。JuanerAI 保留自己的终端与业务策略，等待固定包后采用；不包含 coding-agent 的终端、主题、命令系统或包管理。
+
+0.4.1 明确支持累计不封顶，同时保留逐次计量、单次输出/超时、授权、审计和取消。旧有限策略及配置身份保留；JuanerAI 接法见 [接入说明](docs/INTEGRATION.md#sdk041juanerai-累计不封顶接法)。
 
 ## 当前交付与边界
 
@@ -12,7 +14,7 @@
 
 `0.2.0` 增加可配置主备模型、同任务预算下的有界切换，以及可独立导入的简化 React 模型设置 UI。使用方法、兼容条件和验证限制见 [v0.2 接入说明](docs/RELEASE-v0.2.md)。UI 只依赖可选 React peer，不把浏览器、凭据存储或数据库强加给核心 SDK 消费者。
 
-**基础包验证不等于真实产品接入成功。** 历史版本已完成独立候选评审及 MiniMax/Xiaomi 的有界合成 Provider 联调；MiniMax Worker 补测 3/3 通过，但此前失败原因仍为 UNKNOWN。见 [独立评审与联调记录](artifacts/review-v0.2/final-review-and-live.md) 和 [Worker 补测](artifacts/minimax-worker-2026-10-07/REPORT.md)（本机证据，不包含在历史 `.tgz` 中）。未迁移产品、建立远程仓库或上线。内存账本不能跨进程或崩溃恢复；工具函数不是沙箱，取消不能撤销已经发生的写操作。
+**基础包验证不等于真实产品接入成功。** 历史版本已完成独立候选评审及 MiniMax/Xiaomi 的有界合成 Provider 联调；MiniMax Worker 补测 3/3 通过，但此前失败原因仍为 UNKNOWN。见 [独立评审与联调记录](artifacts/review-v0.2/final-review-and-live.md) 和 [Worker 补测](artifacts/minimax-worker-2026-10-07/REPORT.md)（本机证据，不包含在历史 `.tgz` 中）。这些验证不证明产品迁移或上线。内存账本不能跨进程或崩溃恢复；工具函数不是沙箱，取消不能撤销已经发生的写操作。
 
 先读唯一维护的 [跨产品接入标准 v0.3](docs/AGENT-RUNTIME.md)，再读 [宿主接点与采用步骤](docs/INTEGRATION.md)。模块边界见 [架构说明](docs/ARCHITECTURE.md)，证据与限制见 [验证记录](docs/VERIFICATION.md)。
 
@@ -20,7 +22,7 @@
 
 ## GitHub 与发行包
 
-公开源码仓库：[gadfly-hbo/pi-agent-runtime](https://github.com/gadfly-hbo/pi-agent-runtime)。固定0.4.0包通过GitHub Release分发，校验值和筛选后的证据见 [公开发布收据](artifacts/public/v0.4.0/RELEASE-RECEIPT.json)。历史本机证据保留、不随Git公开；同步规则见 [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md)。
+公开源码仓库：[gadfly-hbo/pi-agent-runtime](https://github.com/gadfly-hbo/pi-agent-runtime)。固定0.4.1包通过GitHub Release分发，校验值和筛选后的证据见 [公开发布收据](artifacts/public/v0.4.1/RELEASE-RECEIPT.json)。0.4.0历史包及收据保留。历史本机证据保留、不随Git公开；同步规则见 [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md)。
 
 ## 本地检查
 

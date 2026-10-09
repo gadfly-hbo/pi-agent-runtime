@@ -1,3 +1,4 @@
+import {outputCap,validateLimits} from './policy.ts';
 import {RuntimeFault} from './errors.ts';
 import type {AgentRequest, BaseRequest, ModelConfig, ModelReply, ThinkingLevel, Tool} from './types.ts';
 
@@ -44,15 +45,14 @@ export function validateRequest(model: ModelConfig, request: BaseRequest, tools:
       !label(model.provider) || !label(model.id) || !integer(model.contextWindow, 1) ||
       (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash) throw Error();
     const limits = request.limits;
+    validateLimits(limits);
+    if(request.modelRecovery && (![0,1].includes(request.modelRecovery.extraAttempts)||Object.keys(request.modelRecovery).some(k=>k!=='extraAttempts')))throw Error();
     if (request.images !== undefined && (!model.input?.includes('image') || !Array.isArray(request.images) || request.images.some(i =>
       !['image/png','image/jpeg','image/gif','image/webp'].includes(i.mimeType) || typeof i.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(i.data) || i.data.length > 4_194_304))) throw Error();
-    validateThinking(model, request.thinkingLevel, Math.min(model.maxOutputTokens ?? limits.outputTokens, limits.outputTokens));
+    validateThinking(model, request.thinkingLevel, Math.min(model.maxOutputTokens ?? outputCap(limits), outputCap(limits)));
     if (!label(request.taskId) || typeof request.prompt !== 'string' ||
       (request.system !== undefined && typeof request.system !== 'string') ||
       Buffer.byteLength(request.prompt + (request.system ?? '')) > 1_048_576 ||
-      !integer(limits.modelCalls, 1) || !integer(limits.toolCalls) || !integer(limits.outputTokens, 1) ||
-      !integer(limits.wallTimeMs, 1) || limits.wallTimeMs > 2_147_483_647 ||
-      (limits.resourceUnits !== undefined && !integer(limits.resourceUnits)) ||
       (request.toolExecution !== undefined && !['sequential', 'parallel'].includes(request.toolExecution)) ||
       Object.entries(request.contextVersions ?? {}).some(([key, value]) => !label(key) || !label(value))) throw Error();
     const names = new Set<string>();

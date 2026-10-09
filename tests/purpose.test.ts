@@ -8,7 +8,8 @@ const limits={modelCalls:3,toolCalls:2,outputTokens:100,wallTimeMs:10000};
 const reply=(text:string):ModelReply=>({content:[{kind:'text',text}],stop:'complete',usage:{inputTokens:1,outputTokens:2}});
 const tool:Tool={name:'net',description:'Synthetic local calculation',effect:'read',resourceUnits:1,parameters:{type:'object',properties:{}},execute:async()=>({net:1050})};
 
-test('purpose plan allows same-task analysis tools then report without resetting consumption',async()=>{
+for(const policy of ['finite','uncapped'] as const)test(`purpose plan allows same-task analysis tools then report without resetting consumption (${policy})`,async()=>{
+ const limits=policy==='finite'?{modelCalls:3,toolCalls:2,outputTokens:100,wallTimeMs:10000}:{cumulative:'unlimited' as const,maxOutputTokens:4,modelTimeoutMs:1000,toolTimeoutMs:1000,controlTimeoutMs:1000};
  let turn=0; const seen:string[]=[];
  const analysis:ModelTransport=async request=>{seen.push(request.model.provider);if(++turn===1)return{content:[{kind:'tool',id:'net-1',name:'net',arguments:{}}],stop:'tools',usage:{inputTokens:1,outputTokens:2}};
  assert.equal(request.messages.find(m=>m.role==='tool')?.text,'{"net":1050}');return reply('1050');};
@@ -23,7 +24,7 @@ test('purpose plan allows same-task analysis tools then report without resetting
  assert.equal(second.status,'succeeded'); assert.equal(second.usage.modelCalls,3);assert.equal(second.usage.toolCalls,1);assert.equal(second.usage.outputTokens,6);
  assert.deepEqual(seen,['synthetic-main','synthetic-main','synthetic-report']);
  const exhausted=await runtime.runText({taskId:'business-1',purpose:'report',prompt:'Again',limits});
- assert.equal(exhausted.status!=='succeeded'&&exhausted.reason,'BUDGET_EXHAUSTED');assert.equal(seen.length,3);
+ if(policy==='finite'){assert.equal(exhausted.status!=='succeeded'&&exhausted.reason,'BUDGET_EXHAUSTED');assert.equal(seen.length,3);}else{assert.equal(exhausted.status,'succeeded');assert.equal(exhausted.usage.modelCalls,4);assert.equal(exhausted.usage.outputTokens,8);assert.equal(seen.length,4);}
 });
 
 const plan=(budgets=createMemoryBudgetStore(), transport:ModelTransport=async()=>reply('ok'))=>({model:main,transport,budgets,authorize:async()=>true,audit:{append:async()=>{}},purposes:[
