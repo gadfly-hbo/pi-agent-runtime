@@ -1,0 +1,132 @@
+{
+  "schema": "pi-agent-runtime-release-promotion/1",
+  "version": "0.4.3",
+  "tag": "v0.4.3",
+  "date": "2026-10-12",
+  "state": "Candidate verified for promotion; formal merged commit is recorded in the GitHub Release asset RELEASE-RECEIPT.json.",
+  "repository": "https://github.com/gadfly-hbo/pi-agent-runtime",
+  "baselineCommit": "703a2649090e5e145a86479dce0ced675d011035",
+  "package": {
+    "file": "pi-agent-runtime-0.4.3.tgz",
+    "bytes": 108617,
+    "sha256": "475480217d5f644a15264b2f838e5567d3e2c2e431b8a23c061a0665dbdbfa70",
+    "promotion": "Existing fixed candidate, original bytes; no replacement archive"
+  },
+  "standard": "v0.3",
+  "piDependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1"
+  },
+  "source": {
+    "candidateManifestFiles": 94,
+    "candidateDrift": [],
+    "sourceManifest": "SOURCE-MANIFEST.json",
+    "packageContents": "PACKAGE-CONTENTS.json",
+    "archiveFiles": 49,
+    "archiveContentDrift": [],
+    "repackedBeforePromotionMaterialsSha256": "475480217d5f644a15264b2f838e5567d3e2c2e431b8a23c061a0665dbdbfa70"
+  },
+  "validation": {
+    "environment": {
+      "node": "24.21.0",
+      "npm": "11.19.0",
+      "typescript": "5.9.3",
+      "host": "macOS arm64"
+    },
+    "offlineCore": 204,
+    "uiRenderChecks": 2,
+    "skipped": 0,
+    "failures": 0,
+    "typecheck": "PASS",
+    "build": "PASS",
+    "osSandbox": "PASS",
+    "loopbackProxy": "PASS",
+    "packedNativeLegacyUncappedAndNeutralTypes": "PASS",
+    "fixedArchiveMTandUC": 19,
+    "separateProcessCompatibility": [
+      "0.4.1 finite -> 0.4.3",
+      "0.4.1 uncapped -> 0.4.3",
+      "0.4.2 finite -> 0.4.3",
+      "0.4.2 uncapped -> 0.4.3"
+    ],
+    "unknownHardExitNoReplay": "PASS: both previous versions, synthetic persistent host",
+    "physicalProviderRequests": 0,
+    "dependencyInstallations": 0,
+    "npmVerifyPackage": "NOT_RUN: install-based script; existing no-install harness package consumer and fixed-archive consumer used"
+  },
+  "review": {
+    "kind": "Reused historical independent mechanism review, not a new independent release review",
+    "v043": {
+      "verdict": "PASS",
+      "evidence": "cached-context100/validator001-result.json",
+      "fixedPackageSha256": "475480217d5f644a15264b2f838e5567d3e2c2e431b8a23c061a0665dbdbfa70",
+      "manifestEntries": 94,
+      "liveSourceDrift": []
+    },
+    "v042": {
+      "verdict": "PASS",
+      "evidence": "shared-sdk-thinking071/validator001-original-message.md",
+      "independentKeyChecks": 27
+    },
+    "oldSandboxWaiverInherited": false,
+    "scope": "SDK offline mechanisms; new release metadata reviewed by the release operator; no product acceptance or hosted CI claim"
+  },
+  "history": {
+    "preserved": true,
+    "importantLimitations": [
+      "MT03 downstream RED initially masked by earlier failure; final GREEN and independent checks executed it.",
+      "MT green001 failed exact 4096 expectation; green002 checked native narrowing without enlarging cap.",
+      "UC full001 had 203 checks; final full002 had 204 checks.",
+      "UC package001 offline install cache failure retained; package002 verified exact fixed package.",
+      "Compatibility005/006 did not execute configuration-history assertion; only compatibility007 is cited for that assertion.",
+      "This closeout does not rerun the original product SQLite or stored real-provider SSE fixture."
+    ]
+  },
+  "compatibility": {
+    "legacyOptionalFields": "Omitted fields retain old transport/model behavior; old finite and uncapped stores remain valid.",
+    "accounting": "Newly reported cache input counted once; historical usage and UNKNOWN are not recalculated or erased.",
+    "configuration": "No implicit task rebinding; explicit thinkingProtocol remains part of immutable configuration.",
+    "rollback": "Retain old exact archive and compatible configuration, reconcile ledger/UNKNOWN and confirm physical idle before host-authorized rollback; never clear history or silently remove an enabled protocol. 0.4.2 restores the previous cache undercount behavior."
+  },
+  "notRun": [
+    "Real Provider",
+    "Business data",
+    "Product adoption or acceptance",
+    "Hosted CI",
+    "Other-device synchronization",
+    "npm publication"
+  ],
+  "otherProductsAutomaticallyUpgraded": false,
+  "evidence": [
+    {
+      "file": "HISTORICAL-EVIDENCE-INDEX.json",
+      "sha256": "63903ec5e955ce430ad9a1c49672a497300ab06d396b086d5a7e47713a143987",
+      "bytes": 9910
+    },
+    {
+      "file": "PACKAGE-CONTENTS.json",
+      "sha256": "55665b45e20cb1d8588f7b681e8b103929e657b6bb2be7907bdc785d59a14414",
+      "bytes": 14478
+    },
+    {
+      "file": "SOURCE-MANIFEST.json",
+      "sha256": "f78a75afba8d91120f795b9b5e44f450336139bce97ad0d0ed5896d870123fde",
+      "bytes": 15238
+    },
+    {
+      "file": "fixed-consumers.log",
+      "sha256": "e9e2361fe08614384397e9b6e0980da7f485ef43c92943309fe9b3f7aa569ff6",
+      "bytes": 3447
+    },
+    {
+      "file": "source-package.log",
+      "sha256": "ba9ac156fd721c166b9ce096eebedc07122907b66e5315d1f798577b8f2870d3",
+      "bytes": 686
+    },
+    {
+      "file": "verify.log",
+      "sha256": "afc4e62f773830bd0ccd1eea0b8023f9209b28406f436caf29bfacae14894316",
+      "bytes": 20603
+    }
+  ]
+}

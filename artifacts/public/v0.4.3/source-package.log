@@ -1,0 +1,11 @@
+
+> pi-agent-runtime@0.4.3 verify:harness-package
+> npm run build && node tools/verify-harness-package.mjs
+
+
+> pi-agent-runtime@0.4.3 build
+> tsc -p tsconfig.build.json && node tools/copy-css.mjs
+
+PACKED_NATIVE_AND_UNCAPPED_CONSUMER_PASS
+{"installedExports":true,"worker":"succeeded","replay":"consumed","agent":"succeeded","text":"succeeded","parallel":"succeeded","thinking":"forwarded"}
+{"pack":"pi-agent-runtime-0.4.3.tgz","sha256":"475480217d5f644a15264b2f838e5567d3e2c2e431b8a23c061a0665dbdbfa70","bytes":108617,"files":49,"publicTypes":"neutral","consumer":"independent extracted tgz","dependencies":"existing exact tree; no installation","candidate":"<temporary-consumer-path>"}

@@ -108,3 +108,8 @@ On 2026-10-09 the JuanerAI user authorized the minimal neutral checkpoint, durab
 2026-10-09 用户明确批准 JuanerAI 暂不设累计额度上限，并授权共享 SDK 做兼容增量。标准版本仍为 v0.3，SDK 新候选为 0.4.1；实现、验证及发布状态见 [版本说明](RELEASE-v0.4.1.md)，不覆盖不可变 0.4.0 包。仅可信宿主可选择策略，模型/Skill/工具结果不能修改。其他产品既有有限策略保留，不自动迁移或启用。
 
 `UncappedUsage.inputTokens` 为已知已结算输入；`reservedOutputTokens` 为未结算预留，包含失败/超时/deferred 的未知消费，不能当成实际 token。`outputTokens` 包含已知输出与未结算预留。单次计量先预留、后结算，重开与 Fork 不消除历史。不响应取消的物理请求保持占用；不自动重试未知工具效果。
+
+
+## SDK0.4.2候选：显式MiMo思考协议映射
+
+2026-10-11，Change005用户明确批准正式补齐MiMo思考开关并在固定交付后作有界产品对照。标准版本仍v0.3。新增可选thinkingProtocol:'mimo-chat'仅允许openai-completions及宿主已验证reasoning:true；由Pi0.86.1内部已有二值思考/续接编码器映射，不复制运行层。该显式协议下thinkingLevel省略/off发送disabled，非off发送enabled，不承诺各等级强度。旧消费者不选择此项就保持旧标准映射。该字段纳入任务不可变配置，历史消费/UNKNOWN不迁移清零。详见MIMO-THINKING-CONTRACT.md。仅本地候选，不自动推定Git发布、真实Provider通过或产品采用；当前超时原因未得到因果证实。
