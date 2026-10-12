@@ -19,6 +19,8 @@ const integer = (value: number, min = 0) => Number.isSafeInteger(value) && value
 const label = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\r\n\u0000]/.test(value);
 export function validateThinking(model: ModelConfig, level: ThinkingLevel | undefined, ceiling: number) {
   if ((model.reasoning !== undefined && typeof model.reasoning !== 'boolean') ||
+    (model.thinkingProtocol !== undefined && (model.thinkingProtocol !== 'mimo-chat' ||
+      model.protocol !== 'openai-completions' || model.reasoning !== true)) ||
     (level !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(level)) ||
     (level !== undefined && level !== 'off' && (model.reasoning !== true ||
       (model.protocol === 'anthropic-messages' && ceiling < 2048)))) throw new RuntimeFault('INVALID_REQUEST');
@@ -35,6 +37,10 @@ export function validateReply(reply: ModelReply) {
         !content.arguments || Array.isArray(content.arguments) || typeof content.arguments !== 'object')) throw Error();
     if (reply.stop === 'deferred' && (!reply.deferred || !label(reply.deferred.id) || reply.content.length)) throw Error();
     if (reply.stop !== 'deferred' && reply.deferred) throw Error();
+    const cacheRead = reply.usage.cacheReadTokens ?? 0, cacheWrite = reply.usage.cacheWriteTokens ?? 0;
+    if ((reply.usage.cacheReadTokens !== undefined && !integer(reply.usage.cacheReadTokens)) ||
+      (reply.usage.cacheWriteTokens !== undefined && !integer(reply.usage.cacheWriteTokens)) || !Number.isSafeInteger(cacheRead + cacheWrite) ||
+      cacheRead + cacheWrite > reply.usage.inputTokens) throw Error();
   } catch {throw new RuntimeFault('INVALID_OUTPUT');}
 }
 export function validateRequest(model: ModelConfig, request: BaseRequest, tools: readonly Tool[]) {

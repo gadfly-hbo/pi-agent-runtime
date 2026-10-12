@@ -1,7 +1,7 @@
 import type {ModelConfig, ModelTransport, RuntimeOptions} from './types.ts';
 import {RuntimeFault} from './errors.ts';
 /** In-memory UI/application values, not a database schema or credential store. */
-export interface ConfiguredModel {id:string; modelId:string; contextWindow:number; maxOutputTokens:number; enabled:boolean; reasoning?:boolean}
+export interface ConfiguredModel {id:string; modelId:string; contextWindow:number; maxOutputTokens:number; enabled:boolean; reasoning?:boolean; thinkingProtocol?:ModelConfig['thinkingProtocol']}
 export interface ConfiguredProvider {
   id:string; name:string; baseUrl:string; protocol:ModelConfig['protocol']; enabled:boolean;
   credentialSet:boolean; models:ConfiguredModel[];
@@ -24,9 +24,10 @@ export function validateSettings(settings:ModelSettings):string[] {
         !['anthropic-messages','openai-completions'].includes(provider.protocol))errors.push('Base URL 或 API 格式不支持');
       const modelIds=new Set<string>();
       for(const model of provider.models) {
-        if(!keys(model,['id','modelId','contextWindow','maxOutputTokens','enabled','reasoning'])||!nonempty(model.id)||!nonempty(model.modelId)||
+        if(!keys(model,['id','modelId','contextWindow','maxOutputTokens','enabled','reasoning','thinkingProtocol'])||!nonempty(model.id)||!nonempty(model.modelId)||
           models.has(model.id)||modelIds.has(model.modelId)||typeof model.enabled!=='boolean'||
           (model.reasoning!==undefined&&typeof model.reasoning!=='boolean')||
+          (model.thinkingProtocol!==undefined&&(model.thinkingProtocol!=='mimo-chat'||provider.protocol!=='openai-completions'||model.reasoning!==true))||
           !integer(model.contextWindow)||!integer(model.maxOutputTokens)||model.maxOutputTokens>model.contextWindow)return ['模型 ID 或参数不合法'];
         modelIds.add(model.modelId);models.set(model.id,{model,provider});
       }
@@ -50,7 +51,8 @@ export function compileSettings(settings:ModelSettings,resolve:(model:ModelConfi
     const provider=captured.providers.find(p=>p.models.some(m=>m.id===key))!;
     const m=provider.models.find(m=>m.id===key)!;
     const model=Object.freeze({provider:provider.id,id:m.modelId,protocol:provider.protocol,endpoint:provider.baseUrl,
-      contextWindow:m.contextWindow,maxOutputTokens:m.maxOutputTokens,...(m.reasoning===undefined?{}:{reasoning:m.reasoning})});
+      contextWindow:m.contextWindow,maxOutputTokens:m.maxOutputTokens,...(m.reasoning===undefined?{}:{reasoning:m.reasoning}),
+      ...(m.thinkingProtocol===undefined?{}:{thinkingProtocol:m.thinkingProtocol})});
     return {model,transport:resolve(model,provider.id)};
   };
   const primary=convert(captured.primary);

@@ -113,3 +113,17 @@ const result = await sessionRuntime.run({
 每个逻辑模型请求最多额外一次：优先下一个备用；无备用时允许可恢复故障/已结束的超时请求重试当前模型；quota 且无备用不重试。原生 retry 同时启用返回 INVALID_REQUEST。取消、权限/账本/审计故障、无效输出不触发额外请求。模型单次超时先取消；当前事件循环中的 Promise 清理已完成才可重试，仍未结束则整次 run 停止并保留 lease，稍后才完成也不自动重发。
 
 控制超时覆盖运行内授权、审计、账本、checkpoint、恢复核账/绑定、扩展 async hook、JSONL 文件操作与行读取、运行中队列控制。每次 IO 各自计时，不给 lane.drive 设置累计截止。无活动 run 的 create/list/history/fork 等管理入口没有任务 limits，仍由宿主控制访问、取消和运维等待；同步 CPU 阻塞须宿主隔离。通知 observer 不作执行门。文件/进程环境的 timeoutMs/maxFileBytes/maxOutputBytes 与任务累计策略无关。
+
+
+## 0.4.2候选：MiMo显式思考协议
+
+宿主确认模型能力后，可在ModelConfig或ConfiguredModel声明reasoning:true及thinkingProtocol:'mimo-chat'（仅openai-completions）。thinkingLevel省略/off显式发送thinking.type=disabled；非off发送enabled，MiMo只支持二值开关，不声称各等级强度。实际provider/id/endpoint不改，reasoning_effort不发送；Pi原生编码器保留工具续接的reasoning_content。公开配置不暴露Pi compat对象，不推测模型名。
+
+未选协议的旧消费者行为/配置形状不变。选项进入不可变Task/用途配置；旧Task不能直接改绑、清账或重放UNKNOWN。正式合同及本地候选状态见MIMO-THINKING-CONTRACT.md与RELEASE-v0.4.2.md。离线wire通过不是Provider超时根因或产品验收；真实验证、发布、产品采用按各自授权。
+
+
+## 0.4.3 · 输入及缓存上下文计量
+
+见[CACHED-CONTEXT-CONTRACT.md](CACHED-CONTEXT-CONTRACT.md)。内置Pi transport的inputTokens现在保留全部已报告输入，cacheReadTokens/cacheWriteTokens为其中的互斥子集；原生Harness获得完整分类，用于原有自动压缩。OpenAI原始prompt_tokens已包含缓存，由Pi统一归一后只计一次。账本接口/不可变任务配置不变，旧自定义transport省略可选分类仍可用；历史低估输入不会被重写。
+
+零或缺失output usage沿用单次输出上限保守计量；缺失input usage不推测，input=0不表示完整测量或免费。报告数值与价格不是token计量。错误分类在结算/工具效果前拒绝。固定包机制通过不等于产品真实长上下文或业务报告验收。

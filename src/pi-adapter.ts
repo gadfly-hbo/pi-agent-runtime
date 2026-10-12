@@ -37,10 +37,26 @@ function fromPiContent(content: AssistantMessage['content'][number]): ModelConte
   return [];
 }
 
+/** Pi already normalizes inclusive Provider totals into disjoint categories. */
+function modelUsage(usage: AssistantMessage['usage'], outputCap: number): ModelReply['usage'] {
+  const input = usage.input ?? 0, cacheReadTokens = usage.cacheRead ?? 0, cacheWriteTokens = usage.cacheWrite ?? 0;
+  return {inputTokens: input + cacheReadTokens + cacheWriteTokens,
+    outputTokens: usage.output || outputCap, cacheReadTokens, cacheWriteTokens};
+}
+function nativeUsage(usage: ModelReply['usage']): AssistantMessage['usage'] {
+  const cacheRead = usage.cacheReadTokens ?? 0, cacheWrite = usage.cacheWriteTokens ?? 0;
+  return {input: usage.inputTokens - cacheRead - cacheWrite, output: usage.outputTokens, cacheRead, cacheWrite,
+    totalTokens: usage.inputTokens + usage.outputTokens,
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}};
+}
+
 function providerModel(config: ModelConfig, maxTokens: number): Model<'openai-completions' | 'anthropic-messages'> {
   return {id: config.id, name: config.id, provider: config.provider, api: config.protocol, baseUrl: config.endpoint,
     contextWindow: config.contextWindow, maxTokens, reasoning: config.reasoning ?? false, input: [...(config.input ?? ['text'])],
-    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}};
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+    // Reuse Pi's binary thinking codec and exact reasoning_content continuation.
+    ...(config.thinkingProtocol === 'mimo-chat' ? {compat: {thinkingFormat: 'deepseek',
+      supportsReasoningEffort: false, requiresReasoningContentOnAssistantMessages: true}} : {})};
 }
 export function createPiTransport(options: PiTransportOptions): ModelTransport {
   if (!options.apiKey.trim()) throw new RuntimeFault('INVALID_REQUEST');
@@ -86,7 +102,7 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
       if (reply.content.some(content => !['text', 'toolCall', 'thinking'].includes(content.type))) throw new RuntimeFault('INVALID_OUTPUT');
       return {content: reply.content.flatMap(fromPiContent),
         stop: reply.stopReason === 'stop' ? 'complete' : reply.stopReason === 'toolUse' ? 'tools' : 'length',
-        usage: {inputTokens: reply.usage.input, outputTokens: reply.usage.output || request.maxOutputTokens}};
+        usage: modelUsage(reply.usage, request.maxOutputTokens)};
     } catch (error) {if (error instanceof RuntimeFault) throw error; if (category) throw new ProviderFailure(category); throw new RuntimeFault('MODEL_FAILED');}
   };
 }
@@ -198,9 +214,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
           content: reply.content.map(toPiContent), timestamp: Date.now(),
           stopReason, ...(reply.deferred ? {deferred:{...reply.deferred,provider:model.provider,modelId:model.id,api:model.api}} : {}),
-          usage: {input: reply.usage.inputTokens, output: reply.usage.outputTokens, cacheRead: 0, cacheWrite: 0,
-            totalTokens: reply.usage.inputTokens + reply.usage.outputTokens,
-            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}};
+          usage: nativeUsage(reply.usage)};
         result.push({type: 'start', partial: message});
         result.push({type: 'done', reason: stopReason, message});
       } catch (error) {
@@ -634,8 +648,7 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
           content: reply.content.map(toPiContent),
           stopReason: reply.stop === 'complete' ? 'stop' : reply.stop === 'tools' ? 'toolUse' : 'length', timestamp: Date.now(),
-          usage: {input: reply.usage.inputTokens, output: reply.usage.outputTokens, cacheRead: 0, cacheWrite: 0,
-            totalTokens: reply.usage.inputTokens + reply.usage.outputTokens, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}};
+          usage: nativeUsage(reply.usage)};
         if (!replaying) await save(messages({...context, messages: [...context.messages, message]}), reply.stop === 'complete' ? 'completed' : 'ready');
         stream.push({type: 'start', partial: message});
         stream.push({type: 'done', reason: reply.stop === 'complete' ? 'stop' : reply.stop === 'tools' ? 'toolUse' : 'length', message});
@@ -749,6 +762,6 @@ if (!isMainThread && workerData?.piRuntimeProxy === true) {
     const reply=await streamProxy(providerModel(model,cap),normalizeContext({messages:fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:history},model,cap)}),
       {proxyUrl:model.proxyEndpoint,authToken:token,maxTokens:cap,...(thinking && thinking!=='off'?{reasoning:thinking}:{})}).result();
     if(!['stop','toolUse','length'].includes(reply.stopReason))throw Error();
-    parentPort?.postMessage({content:reply.content.flatMap(fromPiContent),stop:reply.stopReason==='stop'?'complete':reply.stopReason==='toolUse'?'tools':'length',usage:{inputTokens:reply.usage.input,outputTokens:reply.usage.output || cap}});
+    parentPort?.postMessage({content:reply.content.flatMap(fromPiContent),stop:reply.stopReason==='stop'?'complete':reply.stopReason==='toolUse'?'tools':'length',usage:modelUsage(reply.usage,cap)});
   }catch{parentPort?.postMessage({error:true});}})();
 }

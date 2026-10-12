@@ -13,6 +13,8 @@ export interface ModelConfig {
   maxOutputTokens?: number;
   /** Host-declared, verified model capability; not inferred from model names. */
   reasoning?: boolean;
+  /** Explicit host-selected MiMo Chat thinking/continuation mapping; no provider-name inference. */
+  thinkingProtocol?: 'mimo-chat';
   input?: readonly ('text' | 'image')[];
   deferred?: boolean;
   proxyEndpoint?: string;
@@ -83,7 +85,14 @@ export interface ModelReply {
   content: ModelContent[];
   stop: 'complete' | 'tools' | 'length' | 'deferred';
   deferred?: DeferredReference;
-  usage: {inputTokens: number; outputTokens: number};
+  usage: {
+    /** All reported input, including cache read/write. Not a monetary cost. */
+    inputTokens: number;
+    outputTokens: number;
+    /** Disjoint subsets of inputTokens; omitted by legacy transports. */
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
 }
 export type ModelTransport = (request: ModelRequest) => Promise<ModelReply>;
 export interface PiTransportOptions {

@@ -1,0 +1,32 @@
+FIXED_ARCHIVE_49_FILES_MATCH_SOURCE_BUILD
+PACKED_NATIVE_AND_UNCAPPED_CONSUMER_PASS
+{"installedExports":true,"worker":"succeeded","replay":"consumed","agent":"succeeded","text":"succeeded","parallel":"succeeded","thinking":"forwarded"}
+{"pack":"pi-agent-runtime-0.4.3.tgz","sha256":"475480217d5f644a15264b2f838e5567d3e2c2e431b8a23c061a0665dbdbfa70","bytes":108617,"files":49,"publicTypes":"neutral","consumer":"independent extracted tgz","dependencies":"existing exact tree; no installation","candidate":"<temporary-consumer-path>"}
+✔ UC100-1: native Anthropic cache read 297849/write 0 counts once in total input (54.361ms)
+✔ UC100-1: native Anthropic cache read 100/write 30 counts once in total input (1.118041ms)
+✔ UC100-1: native Anthropic cache read 0/write 120 counts once in total input (0.862542ms)
+✔ UC100-1: OpenAI prompt total already includes cache, never double counts it (29.664709ms)
+✔ UC100-3: partial/missing usage keeps conservative output reservation and only reported input (2.122ms)
+✔ UC100-4: invalid cache classification is refused before tool effects or refund (17.536833ms)
+✔ UC100-4: malformed optional categories and combined overflow are refused (3.612416ms)
+✔ UC100-2/5: cached HTTP context triggers native automatic compaction and next request consumes summary on the same ledger (32.248041ms)
+✔ MT01/02: explicit MiMo mapping encodes omitted thinking without changing provider or cap (65.274208ms)
+✔ MT01/02: explicit MiMo mapping encodes off thinking without changing provider or cap (2.971ms)
+✔ MT01/02: explicit MiMo mapping encodes low thinking without changing provider or cap (2.660666ms)
+✔ MT01/02: explicit MiMo mapping encodes high thinking without changing provider or cap (1.957667ms)
+✔ MT02: old standard mapping is unchanged even for a MiMo-named model (1.96175ms)
+✔ MT03: native MiMo tool continuation consumes exact reasoning and tool result without exposing reasoning in audit or final answer (9.293584ms)
+✔ MT04: invalid explicit protocol {"thinkingProtocol":"unknown"} refuses before effects (0.251292ms)
+✔ MT04: invalid explicit protocol {"protocol":"anthropic-messages"} refuses before effects (0.11775ms)
+✔ MT04: invalid explicit protocol {"reasoning":false} refuses before effects (0.121916ms)
+✔ MT04: changing the explicit mapping cannot rebind an existing Task or reset usage (1.516708ms)
+✔ MT05: settings validate and preserve explicit protocol in the immutable compiled model (0.4735ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 405.17025
+{"status":"PASS","physicalProviderRequests":0,"compatibility":[{"from":"0.4.1","to":"0.4.3","mode":"session","sameTask":true,"sameConfiguration":true,"storedToolResultConsumed":true,"cumulativeHistoryPreserved":true,"hardExitUnknownNoReplay":"covered by source suite"},{"from":"0.4.1","to":"0.4.3","mode":"uncapped","sameTask":true,"sameConfiguration":true,"storedToolResultConsumed":true,"cumulativeHistoryPreserved":true,"hardExitUnknownNoReplay":true},{"from":"0.4.2","to":"0.4.3","mode":"session","sameTask":true,"sameConfiguration":true,"storedToolResultConsumed":true,"cumulativeHistoryPreserved":true,"hardExitUnknownNoReplay":"covered by source suite"},{"from":"0.4.2","to":"0.4.3","mode":"uncapped","sameTask":true,"sameConfiguration":true,"storedToolResultConsumed":true,"cumulativeHistoryPreserved":true,"hardExitUnknownNoReplay":true}]}
