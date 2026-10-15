@@ -1,4 +1,4 @@
-import type {Reason} from './types.ts';
+import type {Reason, ContextAdmission, ModelOutcome, ToolOutcome} from './types.ts';
 export class RuntimeFault extends Error {
   readonly reason: Reason;
   constructor(reason: Reason) {super(reason); this.name = 'RuntimeFault'; this.reason = reason;}
@@ -6,10 +6,80 @@ export class RuntimeFault extends Error {
 /** Explicit transport classification, never derived from arbitrary error text. */
 export class ProviderFailure extends RuntimeFault {
   readonly category: 'quota' | 'rate-limit' | 'unavailable' | 'network';
-  constructor(category: ProviderFailure['category']) {
+  readonly outcome?: Readonly<ModelOutcome>;
+  constructor(category: ProviderFailure['category'], outcome?: ModelOutcome) {
     super('MODEL_FAILED'); this.name = 'ProviderFailure'; this.category = category;
+    if (outcome) this.outcome = safeOutcome(outcome);
   }
 }
 export function reasonOf(error: unknown, fallback: Reason = 'MODEL_FAILED'): Reason {
   return error instanceof RuntimeFault ? error.reason : fallback;
+}
+
+/** Safe admission report only; no prompt, schema, credentials or raw Provider body. */
+export class ContextAdmissionFailure extends RuntimeFault {
+  readonly admission: Readonly<ContextAdmission>;
+  constructor(admission: ContextAdmission) {
+    super('INVALID_REQUEST'); this.name = 'ContextAdmissionFailure';
+    this.admission = Object.freeze({...admission, model: Object.freeze({...admission.model})});
+  }
+}
+
+/** A confirmed neutral classification, never arbitrary Provider text. */
+export class ModelFailure extends RuntimeFault {
+  readonly outcome: Readonly<ModelOutcome>;
+  constructor(outcome: ModelOutcome, reason: Reason = 'MODEL_FAILED') {
+    super(reason); this.name = 'ModelFailure'; this.outcome = safeOutcome(outcome);
+  }
+}
+export function safeOutcome(outcome: ModelOutcome): Readonly<ModelOutcome> {
+  const label = (value:unknown) => typeof value==='string' && value.length>0 && value.length<=256 && !/[\r\n\u0000]/.test(value);
+  if (!outcome || !label(outcome.model?.provider) || !label(outcome.model?.id) ||
+    !['openai-completions','anthropic-messages'].includes(outcome.model.protocol) ||
+    (outcome.responseModel!==undefined && !/^[A-Za-z0-9_.:/-]{1,256}$/.test(outcome.responseModel)) ||
+    !['complete','tools','length','deferred','error','cancelled','unknown'].includes(outcome.stop) ||
+    (outcome.category!==undefined && !['context','quota','rate-limit','unavailable','network','authentication','invalid-request','invalid-output','safety','unknown'].includes(outcome.category)) ||
+    !['not-sent','response-received','unknown'].includes(outcome.physicalStatus) || typeof outcome.usageFinal!=='boolean' ||
+    (outcome.httpStatus!==undefined && (!Number.isSafeInteger(outcome.httpStatus)||outcome.httpStatus<100||outcome.httpStatus>599)) ||
+    !['COMPLETE','OUTPUT_LIMIT','CONTEXT_LIMIT','REQUEST_FAILED','CANCELLED','UNKNOWN'].includes(outcome.diagnostic))throw new RuntimeFault('INVALID_OUTPUT');
+  const token = (value: ModelOutcome['usage']['inputTokens']) => {
+    if (value.kind === 'unknown') {
+      if(value.reported!==undefined && (!Number.isSafeInteger(value.reported)||value.reported<0))throw new RuntimeFault('INVALID_OUTPUT');
+      return Object.freeze({kind:'unknown' as const,...(value.reported===undefined?{}:{reported:value.reported})});
+    }
+    if (value.kind !== 'known' || !Number.isSafeInteger(value.value) || value.value < 0) throw new RuntimeFault('INVALID_OUTPUT');
+    return Object.freeze({kind:'known' as const, value:value.value});
+  };
+  return Object.freeze({model:Object.freeze({provider:outcome.model.provider, id:outcome.model.id, protocol:outcome.model.protocol}),
+    ...(outcome.responseModel === undefined ? {} : {responseModel:outcome.responseModel}), stop:outcome.stop,
+    ...(outcome.category === undefined ? {} : {category:outcome.category}), physicalStatus:outcome.physicalStatus,
+    ...(outcome.httpStatus === undefined ? {} : {httpStatus:outcome.httpStatus}),
+    usageFinal:outcome.usageFinal, usage:Object.freeze({inputTokens:token(outcome.usage.inputTokens), outputTokens:token(outcome.usage.outputTokens)}), diagnostic:outcome.diagnostic});
+}
+
+export function safeToolOutcome(outcome: ToolOutcome): Readonly<ToolOutcome> {
+  if (!outcome.name || outcome.name.length>256 || /[\r\n\u0000]/.test(outcome.name) ||
+    !['read','write','external'].includes(outcome.effect) || !['completed','unknown'].includes(outcome.status) ||
+    !['pending','ready','rejected','failed'].includes(outcome.modelOutput) ||
+    !Number.isSafeInteger(outcome.resourceUnits) || outcome.resourceUnits<0 ||
+    (outcome.receiptId!==undefined && !/^[A-Za-z0-9_.:-]{1,256}$/.test(outcome.receiptId)) ||
+    (outcome.failureCategory!==undefined && !['not_found','not_directory','is_directory','permission_denied','invalid','not_supported','cancelled','timeout','limit_exceeded','unknown'].includes(outcome.failureCategory)))throw new RuntimeFault('INVALID_OUTPUT');
+  const invocation=outcome.invocation;
+  return Object.freeze({name:outcome.name,effect:outcome.effect,status:outcome.status,modelOutput:outcome.modelOutput,resourceUnits:outcome.resourceUnits,
+    ...(outcome.receiptId===undefined?{}:{receiptId:outcome.receiptId}),...(outcome.reason===undefined?{}:{reason:outcome.reason}),
+    ...(outcome.failureCategory===undefined?{}:{failureCategory:outcome.failureCategory}),
+    ...(invocation?{invocation:Object.freeze({sessionId:invocation.sessionId,branch:invocation.branch,operationId:invocation.operationId,invocationId:invocation.invocationId,toolCallId:invocation.toolCallId})}:{})});
+}
+/** Result delivery failed after execution; completion/receipt is separate from model-visible success. */
+export class ToolOutputFailure extends RuntimeFault {
+  readonly outcome: Readonly<ToolOutcome>;
+  constructor(outcome: ToolOutcome, reason: Reason = 'TOOL_FAILED') {
+    super(reason); this.name='ToolOutputFailure'; this.outcome=safeToolOutcome(outcome);
+  }
+}
+
+/** Neutral host limit distinct from native missing/authority/unsupported failures. */
+export class ExecutionLimitFailure extends RuntimeFault {
+  readonly code = 'limit_exceeded';
+  constructor() {super('BUDGET_EXHAUSTED');this.name='ExecutionLimitFailure';}
 }

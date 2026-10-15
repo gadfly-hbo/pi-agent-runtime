@@ -80,8 +80,48 @@ export interface ModelRequest {
   thinkingLevel?: ThinkingLevel;
   deferred?: {action: 'start'} | {action: 'poll' | 'cancel'; handle: DeferredReference};
 }
+/** Host-verified protocol/image allowance. Pinned with the task; estimates are not Provider usage. */
+export interface ContextAdmissionPolicy {
+  policyVersion: string;
+  protocolOverheadTokens: number;
+  safetyMarginTokens: number;
+  /** Verified conservative allowance per image for the actual candidate. Absence rejects images. */
+  imageTokens?: number;
+}
+export interface ContextAdmission {
+  basis: 'pi-estimate-with-byte-envelope';
+  policyVersion: string;
+  model: Pick<ModelConfig, 'provider' | 'id' | 'protocol'>;
+  contextWindow: number;
+  piEstimateTokens: number;
+  envelopeBytes: number;
+  budgetedInputTokens: number;
+  protocolOverheadTokens: number;
+  imageTokens: number;
+  safetyMarginTokens: number;
+  reservedOutputTokens: number;
+  requiredTokens: number;
+}
+export type ReportedTokens = {kind: 'known'; value: number} | {kind: 'unknown'; reported?: number};
+export type ModelFailureCategory = 'context' | 'quota' | 'rate-limit' | 'unavailable' | 'network' |
+  'authentication' | 'invalid-request' | 'invalid-output' | 'safety' | 'unknown';
+/** Safe per-transport observation; configured candidate and Provider-reported model remain separate. */
+export interface ModelOutcome {
+  model: Pick<ModelConfig, 'provider' | 'id' | 'protocol'>;
+  responseModel?: string;
+  stop: ModelReply['stop'] | 'error' | 'cancelled' | 'unknown';
+  category?: ModelFailureCategory;
+  physicalStatus: 'not-sent' | 'response-received' | 'unknown';
+  httpStatus?: number;
+  /** False means counters may be partial; never refund the unconfirmed output reservation. */
+  usageFinal: boolean;
+  usage: {inputTokens: ReportedTokens; outputTokens: ReportedTokens};
+  diagnostic: 'COMPLETE' | 'OUTPUT_LIMIT' | 'CONTEXT_LIMIT' | 'REQUEST_FAILED' | 'CANCELLED' | 'UNKNOWN';
+}
 export interface DeferredReference {id: string; data?: JsonValue; pollAfterMs?: number; expiresAt?: number}
 export interface ModelReply {
+  /** Required on replies when Runtime.modelObservations is v1; legacy numbers cannot prove known usage. */
+  outcome?: ModelOutcome;
   content: ModelContent[];
   stop: 'complete' | 'tools' | 'length' | 'deferred';
   deferred?: DeferredReference;
@@ -96,6 +136,8 @@ export interface ModelReply {
 }
 export type ModelTransport = (request: ModelRequest) => Promise<ModelReply>;
 export interface PiTransportOptions {
+  /** Explicit new reporting semantics; omission preserves legacy transport values. */
+  modelObservations?: 'v1';
   model: ModelConfig;
   /** Explicit credential only. Never discovers environment variables or local auth files. */
   apiKey: string;
@@ -122,6 +164,8 @@ export interface AuditEvent {
   reason?: Reason;
   attempt?: number;
   failureCategory?: 'quota' | 'rate-limit' | 'unavailable' | 'network';
+  modelOutcome?: Readonly<ModelOutcome>;
+  toolOutcome?: Readonly<ToolOutcome>;
   session?: SessionBinding;
   invocation?: ToolInvocation;
 }
@@ -142,6 +186,10 @@ export interface PurposeConfig {
   thinkingLevel?: ThinkingLevel;
 }
 export interface RuntimeOptions {
+  /** New per-call observation/accounting semantics; pinned to new tasks only. */
+  modelObservations?: 'v1';
+  /** New tasks opt into a pinned full-request guard; legacy task configurations remain unchanged. */
+  contextAdmission?: ContextAdmissionPolicy;
   /** When supplied every run must select a declared purpose; the entire plan is pinned. */
   purposes?: readonly PurposeConfig[];
   model: ModelConfig;
@@ -160,6 +208,8 @@ export interface BudgetStore {
   claim(taskId: string, runId: string, configuration: string, limits: Limits): Promise<BudgetLease>;
 }
 export interface BudgetLease {
+  /** New reporting policy requires atomic partial usage without refunding UNKNOWN output. */
+  recordModelUsage?(reservedTokens: number, usage: {inputTokens?: number; outputTokens?: number; final: boolean}): Promise<void>;
   snapshot(): Usage;
   reserveModel(): Promise<number>;
   /** Optional extension. Routed execution requires atomic capped reservation. */
@@ -200,7 +250,28 @@ export interface BaseRequest {
 }
 export interface WorkerRequest<T> extends BaseRequest {validate(value: unknown): T}
 export interface TextRequest extends BaseRequest {validate?(text: string): string}
+export interface ToolOutputPolicy {
+  policyVersion: string;
+  maxBytes: number;
+  /** Host-owned local persistence/view projection. No Provider calls or new storage engine. */
+  project?(input: {value: JsonValue; signal: AbortSignal; invocation?: ToolExecutionContext}): Promise<{value: JsonValue; receiptId?: string}>;
+}
+/** Safe diagnostic only; never an effect, retry or authorization decision. */
+export type ToolFailureCategory = 'not_found' | 'not_directory' | 'is_directory' | 'permission_denied' | 'invalid' | 'not_supported' | 'cancelled' | 'timeout' | 'limit_exceeded' | 'unknown';
+export interface ToolOutcome {
+  name: string;
+  effect: Tool['effect'];
+  status: 'completed' | 'unknown';
+  modelOutput: 'pending' | 'ready' | 'rejected' | 'failed';
+  /** Opaque host-owned receipt identity; not a readable resource reference. */
+  receiptId?: string;
+  resourceUnits: number;
+  invocation?: ToolInvocation;
+  reason?: Reason;
+  failureCategory?: ToolFailureCategory;
+}
 export interface Tool {
+  modelOutput?: ToolOutputPolicy;
   /** Structured text/image output; ordinary tools retain JSON serialization. */
   output?: 'content';
   /** Stable host environment/policy identity included in task configuration. */
@@ -240,6 +311,8 @@ export interface AgentRequest extends BaseRequest {
 }
 export type RunResult<T> = {
   taskId: string; runId: string; usage: Usage; usageKnown: boolean;
+  modelOutcome?: Readonly<ModelOutcome>;
+  toolOutcomes?: readonly Readonly<ToolOutcome>[];
 } & ({status: 'succeeded'; value: T} | {status: 'waiting'; reason: 'BUSINESS_WAIT'; checkpoint: ConversationCheckpoint} | {status: 'suspended'; reason: 'DEFERRED'; session: SessionBinding} | {status: 'failed' | 'cancelled' | 'blocked'; reason: Reason});
 export interface Runtime {
   runWorker<T>(request: WorkerRequest<T>): Promise<RunResult<T>>;

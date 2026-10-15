@@ -32,3 +32,11 @@ of an executable bundle, the distributing product must collect the complete
 installed dependency license set; this file is not a full bundled-app license
 audit. No license for the user's own SDK source is selected here; it remains
 a private local package until the user chooses publication and licensing.
+
+R1–R4 adds an explicit exact dependency on `openai@6.40.0`, already installed
+transitively by Pi AI 0.86.1. Its metadata declares Apache-2.0; the installed
+package includes its LICENSE. The SDK imports only the native SSE framing
+iterator to preserve reporting metadata before Pi normalization; Pi still owns
+HTTP/SSE content decoding and the Agent/Session loop. No OpenAI client, auth
+discovery or extra request is created by this import. The SDK tarball does not
+bundle OpenAI source; dependency version/resolved/integrity entries remain unchanged.

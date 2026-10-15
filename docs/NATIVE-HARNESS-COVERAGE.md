@@ -1,3 +1,7 @@
+# Pi Harness 接线与验收台账：当前 SDK 0.5.1
+
+2026-10-15 当前发布收口：运行实现与已验收 0.5.1-r1r4.3 相同，正式包另行验证，身份及边界见 [0.5.1](RELEASE-v0.5.1.md)。JuanerAI PR #83 已合并；实际采用仍是 .3，限定离线 opt-in 接受，不等于换包或生产采用。下表的“待采用”均为 2026-10-09 历史快照，不覆盖当前状态。
+
 # Pi Harness 接线与验收台账：SDK 0.4.0 + 0.4.1 策略增量
 
 日期：2026-10-09。范围为精确 `pi-agent-core + pi-ai 0.86.1` 的正式 Harness 机制，标准维持 v0.3。共享层状态与真实产品采用分列；发布身份以 RELEASE-v0.4.md 和发布收据为准。
@@ -74,3 +78,19 @@ SDK 机制通过不表示 JuanerAI Analysis IR、真实专业质量、生产账�
 ## SDK0.4.3 缓存上下文计量增量
 
 M02/N07/N16：UC100-1/2/5真实Pi离线HTTP两协议、缓存自动压缩及下一请求摘要消费，所有摘要仍经相同权威预算/授权/审计。UC100-3/4保留缺失用量保守处理和非法分类拒绝。固定新旧消费者及同Task配置签名、JSONL重开、账本不清零在当前设备cached-context100证据中验证。此增量不修改原生压缩、会话恢复或产品权限。旧表格产品采用状态属于0.4.0历史，不替代本次产品采用实测。
+
+## 2026-10-14 R1–R4受控增量
+
+N07/N08压缩摘要、N10候选、N13工具、N14原生read与M02 codec仍由core/ai0.86.1负责。新增最终DTO准入、可选ModelOutcome/部分预算计量和Tool.modelOutput/ToolOutcome只补中立权威接缝，不替换这些原生机制。原生read error mapping保留not_found等及单独limit_exceeded。openai6.40.0 framing仅观察usage字段存在性，内容/工具/reasoning仍交Pi；不新增Provider或coding-agent默认功能。接口、已知/UNKNOWN、统一恢复、局部与产品验证分界见R1-R4-ENGINEERING-HANDOFF.md增量002。旧台账/失败证据保留；R5/R6仍不在本批。
+
+## 0.5.1 当前共享接点与采用范围
+
+| 范围 | 公共消费与责任 | 验证及采用边界 |
+|---|---|---|
+| R1 | contextAdmission/admitModelRequest；宿主最终投影后，物理账本/发送前，同一 DTO；每候选/摘要重查 | 合成 200k/1M 与较小备用、大 schema/history、压缩后仍大拒绝；生产 overhead/margin/image UNKNOWN |
+| R2 | modelObservations v1、ModelOutcome、BudgetLease.recordModelUsage | known-zero/partial/UNKNOWN、物理状态、迟到/恢复共额；真实 Provider NOT RUN |
+| R3 | Tool.modelOutput、ToolOutputFailure、ToolOutcome | 宿主完整正文/授权资料映射、执行后超限效果及回执；没有通用业务存储 |
+| read/API004 | createExecutionTools(host,['read'])；ToolOutcome.failureCategory | 原生 offset/limit/content/details，cancel/timeout/host限额区别；原生截断续读是成功内容 |
+| R4 | purpose.fallbacks、modelRecovery.extraAttempts | 每候选权限/窗口/能力复查，已完成和 UNKNOWN 工具不重放 |
+
+Mini 的上述接点已按原 .3 包完成受影响联合验证，并在固定产品提交中接受限定范围。正式 0.5.1 的 SDK 验证及独立评审另附收据；不机械重复产品验收，也不继承原安装身份。R5/R6、生产准入、历史故障归因和未知消耗保持原边界。

@@ -1,0 +1,48 @@
+{
+  "baseline": "0.5.1-r1r4.3",
+  "matchedCandidateFiles": 84,
+  "changed": [
+    {
+      "path": "README.md",
+      "before": "870f93350d16970ab92589278b7c06bf14ed8ff4bcee3042820d6be513440e97",
+      "after": "1e6f1fe835719af5f89c6e913f1d5b7d97a170e648697fc6dc0258f05c2a4d2e",
+      "kind": "release documentation"
+    },
+    {
+      "path": "docs/AGENT-RUNTIME.md",
+      "before": "bd77063d542fa19bd66d71403ea9414ba4d4b2a1cea7092b1742825adda8dd1b",
+      "after": "278aa33b6bb6e40ea874360157c75341616741e1c4b10add2964122037e2038f",
+      "kind": "release documentation"
+    },
+    {
+      "path": "docs/NATIVE-HARNESS-COVERAGE.md",
+      "before": "9c704d1696bdf683a02ad20b10a6f1970d583d571db71c34621e6afaa85dff5b",
+      "after": "799cbc4ff819621be4ee9023bd71e5ad5dcb3d103b935045f1c3c817b21d87ec",
+      "kind": "release documentation"
+    },
+    {
+      "path": "docs/R1-R4-ENGINEERING-HANDOFF.md",
+      "before": "cf31db749388161aa20b8ee3fd916467fdd2c9adb6c50905df338be5395babc0",
+      "after": "12afd502223f7bd3fbc7bd4d1b8c4ec0c014a06f328f2d26226825d2d0826346",
+      "kind": "release documentation"
+    },
+    {
+      "path": "package-lock.json",
+      "before": "f980aae86e1a91c563850f6ef028ea3a8656d6c048b7dcc47deeb7506b944c8c",
+      "after": "6e8c6401ff331d667c27fc38721a973dd1a1dc95a415132110904e3e61413a31",
+      "kind": "version metadata"
+    },
+    {
+      "path": "package.json",
+      "before": "5da596592e695fde2a6f985b0ae0322ddc62c45a03b3f65c6f38089859c4f364",
+      "after": "3443a15bb784572114763d172ec151ab31d6e1e1915382e5c9185d40b6abf7cf",
+      "kind": "version metadata"
+    }
+  ],
+  "added": [
+    "docs/RELEASE-v0.5.1.md",
+    "docs/PRODUCT-ADOPTION-v0.5.1.md"
+  ],
+  "runtimeAndTestsUnchanged": true,
+  "nonRootLockEntriesUnchanged": 151
+}

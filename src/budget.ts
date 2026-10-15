@@ -43,6 +43,17 @@ export function createMemoryBudgetStore(): BudgetStore {
       async reserveModel() {return reserve();},
       async reserveModelUpTo(maximum:number) {return reserve(maximum);},
       settleModel:settle,
+      async recordModelUsage(reserved:number, usage:{inputTokens?:number;outputTokens?:number;final:boolean}) {
+        assertOwner();counted(reserved);
+        if(reserved<1 || typeof usage.final!=='boolean')throw new RuntimeFault('STATE_FAILED');
+        const input=usage.inputTokens===undefined?0:counted(usage.inputTokens);
+        const output=usage.outputTokens===undefined?undefined:counted(usage.outputTokens);
+        const settled=usage.final && output!==undefined;
+        const outputTokens=settled?counted(state.usage.outputTokens-reserved+output):counted(state.usage.outputTokens+Math.max(0,(output??0)-reserved));
+        const next={...state.usage,outputTokens,inputTokens:counted((state.usage.inputTokens??0)+input),
+          ...(uncapped(state.limits)?{reservedOutputTokens:settled?counted(state.usage.reservedOutputTokens!-reserved):state.usage.reservedOutputTokens!}:{})};
+        Object.assign(state.usage,next);
+      },
       async settleModelUsage(reserved:number,usage:{inputTokens:number;outputTokens:number}) {await settle(reserved,usage.outputTokens,usage.inputTokens);},
       async reserveTool(units:number) {
         assertOwner();counted(units);
