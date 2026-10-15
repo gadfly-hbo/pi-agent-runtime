@@ -1,10 +1,10 @@
 # Pi Agent 接入基础包
 
-跨产品统一接法与运行机制，业务能力按产品扩展。SDK 当前交付版本为 `0.4.1` 累计策略兼容增量，直接依赖 `pi-ai + pi-agent-core` **精确 0.86.1**，标准维持 v0.3。本轮状态见 [0.4.1说明](docs/RELEASE-v0.4.1.md)；已发布0.4.0包与历史证据保持不变。
+跨产品统一接法与运行机制，业务能力按产品扩展。当前正式版目标为 **0.5.1**，由已接受的 `0.5.1-r1r4.3` 固定候选晋升；运行实现不变，独立正式包的发布及验证身份见 [0.5.1说明](docs/RELEASE-v0.5.1.md) 与 GitHub Release 附件。标准仍为 **v0.3**，Pi core/ai 精确 **0.86.1**，openai 精确 **6.40.0**。
 
-原生持久会话、分支/恢复、Skills/模板、自动压缩、队列控制、工具与受限执行环境、观测扩展及条件模型能力均已接入共享层；[逐项台账](docs/NATIVE-HARNESS-COVERAGE.md) 列明配置、消费者和验证。JuanerAI 保留自己的终端与业务策略，等待固定包后采用；不包含 coding-agent 的终端、主题、命令系统或包管理。
+原生持续会话、压缩、工具循环与 read 继续复用 Pi。R1–R4 的最终请求准入、安全错误/用量/物理状态、工具输出效果/回执及 read 失败载体见 [公共接入说明](docs/RELEASE-v0.5.1.md)。[能力台账](docs/NATIVE-HARNESS-COVERAGE.md) 分列历史机制证据与当前采用状态；没有新增 R5/R6、通用业务存储或第二运行引擎。
 
-0.4.1 明确支持累计不封顶，同时保留逐次计量、单次输出/超时、授权、审计和取消。旧有限策略及配置身份保留；JuanerAI 接法见 [接入说明](docs/INTEGRATION.md#sdk041juanerai-累计不封顶接法)。
+JuanerAI 已采用原固定候选 `0.5.1-r1r4.3`（146131 bytes，SHA256 `e02175ff42eaa83b994e6f49a1e041b4b3f0b9c807b0b8c192a7dfd836f70cce`），[PR #83](https://github.com/gadfly-hbo/JuanerAI/pull/83) 已合并至 `07f6ec36bd1efc275e89322384adef94440cdd03`。接受范围仅 R1–R4＋D1–D8 A 离线合成、显式 opt-in；原 Validator BLOCKED F-ROLE-01、技术 PASS、用户精确候选具名豁免分别保留。它不等于正式 0.5.1 换包采用、生产或全部产品能力验收；豁免不沿用于 SDK 发布评审。其他产品不自动升级。
 
 ## 当前交付与边界
 
@@ -22,7 +22,7 @@
 
 ## GitHub 与发行包
 
-公开源码仓库：[gadfly-hbo/pi-agent-runtime](https://github.com/gadfly-hbo/pi-agent-runtime)。固定0.4.1包通过GitHub Release分发，校验值和筛选后的证据见 [公开发布收据](artifacts/public/v0.4.1/RELEASE-RECEIPT.json)。0.4.0历史包及收据保留。历史本机证据保留、不随Git公开；同步规则见 [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md)。
+公开源码仓库：[gadfly-hbo/pi-agent-runtime](https://github.com/gadfly-hbo/pi-agent-runtime)。0.5.1 通过 GitHub Release 分发，校验值与筛选证据见 [发布材料](artifacts/public/v0.5.1/RELEASE-NOTES.md)。不发布 npm；所有历史固定包及收据保留。历史本机证据保留、不随Git公开；同步规则见 [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md)。
 
 ## 本地检查
 
@@ -78,38 +78,9 @@ thinking 的协议续接块不进入普通审计或最终答案；跨模型时 P
 
 ## 转发给产品开发 Agent 的接入 Prompt
 
-新产品接入或老产品迁移都用下面这一段。填写前三项后，整段转发到目标产品的开发 session。它不替代目标项目的审批规则，也不授权修改共享基础包。当前文档与源码在本机目录；跨设备转发时同时提供可访问的材料和冻结包。历史 `.tgz` 不会因本次 README 更新自动改变。
+使用 [0.5.1 接续 Prompt](docs/PRODUCT-ADOPTION-v0.5.1.md)。它提供接收顺序及停止点，不授予产品升级、生产启用或真实 Provider 调用。跨设备交付必须同时提供固定包与完整校验材料；可变源码不是消费入口。
 
-```text
-请为以下产品接入统一的 Pi Agent 基础包；已有 Agent 能力则按同一标准做最小迁移，不另造 Runtime。
-
-产品仓库／工作树：[填写绝对路径]
-本次接入范围与用户验收目标：[填写具体功能，不写“迁移所有产品”]
-接入类型：[新产品接入／老产品迁移]
-
-共享基础包本机路径：/Users/huangbo/Dev/Projects/pi-agent-runtime。
-先完整读取 README.md、唯一维护的跨产品标准 docs/AGENT-RUNTIME.md（v0.3）、docs/INTEGRATION.md、docs/ARCHITECTURE.md、docs/RELEASE-v0.2.md、docs/RELEASE-v0.3.md、docs/RELEASE-v0.3.1.md、docs/RELEASE-v0.3.2.md，并核对 package.json、公共类型、实际导出及当前验证证据。当前观察到 SDK 0.3.2 候选，须在接收端重新核对；标准仍为 v0.3，历史 tgz 不因文档修改自动改变。后续原生 Harness 完整接入范围见 HARNESS-ROADMAP.md，不把规划当现有 API。跨设备须提供当前标准及对应版本 SDK 材料，不能仅凭历史冻结包推定文档已更新。历史记录不能覆盖当前合同，也不能把基础包 PASS 当作目标产品验收。路径不可访问时明确列出缺失材料，要求提供明确身份的对应材料，不从旧聊天补猜或回退到已废止文档。
-
-1. 先只读核对目标项目规则、批准的产品/UI范围、当前基线、既有改动与兼容要求。定位实际 Agent 入口、模型配置、工具、凭据、任务状态、存储和测试。说明哪些可复用、哪些宿主接点必须补齐、允许修改的文件及验收命令；必要 Gate 未满足时只做接入评估，停在相应批准点。
-
-2. 通过一个产品 Adapter/composition root 使用 pi-agent-runtime 的中立接口，保持业务 Core/Application/Port 独立。Pi 原生调用和类型只留在共享包内部 Pi Adapter；产品不直接 import Pi，不借用 pi-coding-agent 的包目录、认证、模型装配或会话。复用版本化包，不复制源码分叉。当前 SDK 候选 0.3.2，内部 pi-ai + pi-agent-core 均精确 0.86.1；核对冻结包的版本与 SHA-256，用产品自己的 lockfile 固定完整依赖树。0.86.x 不是精确锁定，升级另走候选验证与受影响消费者回归，保留旧包回滚。
-
-3. 按接入标准 v0.3 的 P1～P6 选择任务模式，不默认所有任务都 Worker，也不预先写死 Agent 路径。runWorker 是无工具、单次模型阶段、JSON 解析加产品 validator；runText 是无工具文本入口，可选文本 validator；故障切换可能产生多次物理请求。runAgent 复用 Pi 的有界工具循环并返回文本；toolExecution 可选 parallel，单工具 executionMode:sequential 覆盖整批。thinkingLevel 可配置，所有主备模型必须声明已验证的 reasoning 能力；不静默降级、不扩大输出预算。旧调用默认串行且不请求 thinking。产品按任务验收，不把解释/创作/对话强制 JSON。业务语义、Analysis IR、证据、报告和状态继续归产品，模型结束不能代替业务完成或批准。
-
-4. 模型由用户配置，不写死 MiniMax/Xiaomi。需要设置界面时，优先直接复用 pi-agent-runtime/ui 的 ModelSettingsPanel 和 pi-agent-runtime/ui.css；遵守目标产品 UI 合同，React/宿主不兼容先说明，不自行换技术栈。界面按 Provider 卡片、Base URL、API 格式、API Key、模型列表和添加/编辑弹窗呈现，一个主模型、至少一个有序备用。配置通过 pi-agent-runtime/settings 的校验与 compileSettings 被真实执行消费。仅接 SDK 已支持且已验证的协议/能力；当前支持 Anthropic Messages、OpenAI Chat Completions，Responses/智能推断不假装支持。
-
-5. 在宿主落实五个接点：显式模型与 transport（含安全凭据解析）、任务级 Authorization、权威原子 BudgetStore、持久化 AuditSink，以及领域工具和适用的输出 validator。用户确认的任务/资源/动作/外发/预算/有效期范围内可自动执行预授权操作；每次仍检查授权，越界或未授权才请求决策，不给每次工具调用统一加弹窗。配置与密钥分开处理；密钥不上 Renderer、普通配置 JSON、localStorage、提示词或日志。同一业务任务使用稳定 taskId，跨请求/实例累计预算；有 cap/主备时实现 reserveModelUpTo。额度按任务需求配置；安全记录与正式内容证据按用途/风险分别处理，不全量保存敏感原文。当前审计失败仍停止，内存示例不能冒充持久化/恢复；写/外部动作落实幂等和未知效果处理，只读接入不增加写权限。
-
-6. 主备严格复用 SDK 合同：仅可分类的 Provider quota/rate-limit/unavailable/network 故障有界切换，每次重新授权并共享同一任务账本；已完成工具结果继续被消费，不重复执行工具。任务预算耗尽、取消、授权/审计失败、结构校验失败等立即停止，不能借备用绕过。供应商账户额度与任务预算不同；不新增余额轮询、隐藏重试或“任何错误都切换”。配置保存不热换执行中任务，同 taskId 的配置/限制变更按合同拒绝。
-
-7. 先合成、后获批真实验证、再获批启用：在目标产品真实入口做正/负向测试、适用的合成回放、消费者回归和任务质量评估，不只凭夹具全绿，也不要求自主 Agent 每次走相同合法路径。证明配置改变实际模型路由、非法配置在效果前拒绝、主备按顺序且预算累计、工具结果不重复执行、取消/未知效果不误报成功、授权/审计故障关闭后续效果、结构化输出严格校验、结果回链任务/运行/上下文版本。使用并行时验证每个工具独立准入、宿主预算原子性和部分失败；使用 thinking 时验证参数、签名续接、token 计量及跨 Provider 上下文外发许可。SDK 审计不保存内部思考；自定义 transport/合成 recorder 会接触完整续接块，禁止用于自动记录真实敏感内容。真实模型按拟启用用途验证，不强制无工具单次任务做完整工具联调。有 UI 时验证保存→执行消费和凭据保护；持久化另验原子性与崩溃未知状态。老产品保留合同、历史及回滚，分清运行成功、任务通过和正式启用。
-
-8. 本次只授权填写范围内、且满足项目既有 Gate 的接入开发。依赖安装、真实 Provider 调用、真实业务数据、持久化迁移、部署、Git 发布和正式启用遵守目标项目的明确授权；未获授权就不执行。真实联调需另定 Provider/模型/凭据来源、合成输入、物理请求数/token/时间上限，未验证模型不进自动主备链。不要沿用共享包此前测试预算或从本机自动搜集凭据。
-
-遇到业务范围、安全/数据外发、公开契约、不可逆迁移或新增成本决定时停下来，给最小选项让我决策。普通已授权实现细节自行闭环，不新增跨 Controller 审批。共享包缺能力时列出准确合同缺口，不私自修改共享仓库或在产品内绕过标准。
-
-交付：接入位置与改动清单、精确依赖及包身份、配置实际消费与正/负向验证证据、宿主已落实/未落实项、迁移兼容与回滚方式、未验证项和下一授权点。未实现、未验证、未启用、未发布分别报告；不能只凭接口、截图或 hash 宣告产品接入完成。
-```
+## 历史版本记录（按当时时点阅读）
 
 ## SDK0.3.1 compatibility candidate
 

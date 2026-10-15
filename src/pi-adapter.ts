@@ -1,10 +1,11 @@
+import {_iterSSEMessages} from 'openai/core/streaming';
 // All Pi dependencies and representations stay in this module.
 import {Agent, AgentHarness, MemorySessionRepo, BACKGROUND_CONTEXT, withAbortSignal,
-  DEFAULT_COMPACTION_SETTINGS, formatSkillsForSystemPrompt, streamProxy, loadSourcedSkills, loadSourcedPromptTemplates, createReadTool, createWriteTool, createEditTool, createBashTool, FileError, ExecutionError, truncateTail, type ExecutionEnv, type Context, type OperationRequest, type AgentLane, type AgentMessage} from '@earendil-works/pi-agent-core';
+  DEFAULT_COMPACTION_SETTINGS, estimateTokens, formatSkillsForSystemPrompt, streamProxy, loadSourcedSkills, loadSourcedPromptTemplates, createReadTool, createWriteTool, createEditTool, createBashTool, FileError, ExecutionError, truncateTail, type ExecutionEnv, type Context, type OperationRequest, type AgentLane, type AgentMessage} from '@earendil-works/pi-agent-core';
 import {JsonlSessionRepo, laneState, operationMeta, operationResult, operationState, value, type Session, type JsonlSessionMetadata} from '@earendil-works/pi-agent-core/harness/session';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {isAbsolute} from 'node:path';
-import {isDeepStrictEqual} from 'node:util';
+import {isDeepStrictEqual, types as utilTypes} from 'node:util';
 import {Worker, isMainThread, parentPort, workerData} from 'node:worker_threads';
 import {randomUUID, createHash} from 'node:crypto';
 import {openAICompletionsApi} from '@earendil-works/pi-ai/api/openai-completions.lazy';
@@ -13,13 +14,13 @@ import {
   createAssistantMessageEventStream,
   createModels,
   validateToolArguments,
-  normalizeContext,
+  normalizeContext, isContextOverflow, isRecoverableLength,
   type DeferredHandle, type Api, type AssistantMessage, type Message, type Model, type TranscriptContext, type TSchema, type Provider,
 } from '@earendil-works/pi-ai';
-import type {AgentRequest, BaseRequest, ConversationCheckpoint, JsonObject, ModelConfig, ModelContent, ModelMessage, ModelReply, ModelTransport, PiTransportOptions, Tool, SessionRuntimeOptions, SessionRuntime, SessionRunRequest, SessionInfo, SessionBinding, HarnessSettings, HarnessControl, HarnessControlResult, ExecutionEnvironment, ResourceLoadOptions, LoadedResources, DeferredReference, ProxyTransportOptions} from './types.ts';
-import {RuntimeFault, ProviderFailure} from './errors.ts';
+import type {AgentRequest, BaseRequest, ConversationCheckpoint, JsonObject, ModelConfig, ModelContent, ModelMessage, ModelReply, ModelTransport, PiTransportOptions, Tool, SessionRuntimeOptions, SessionRuntime, SessionRunRequest, SessionInfo, SessionBinding, HarnessSettings, HarnessControl, HarnessControlResult, ExecutionEnvironment, ResourceLoadOptions, LoadedResources, DeferredReference, ProxyTransportOptions, ModelRequest, ContextAdmissionPolicy, ContextAdmission, ModelOutcome, ToolFailureCategory} from './types.ts';
+import {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ExecutionLimitFailure} from './errors.ts';
 import {outputCap} from './policy.ts';
-import {validateThinking} from './validation.ts';
+import {validateThinking, isJson, freeze} from './validation.ts';
 
 function toPiContent(content: ModelContent): AssistantMessage['content'][number] {
   if (content.kind === 'text') return {type: 'text', text: content.text};
@@ -58,14 +59,93 @@ function providerModel(config: ModelConfig, maxTokens: number): Model<'openai-co
     ...(config.thinkingProtocol === 'mimo-chat' ? {compat: {thinkingFormat: 'deepseek',
       supportsReasoningEffort: false, requiresReasoningContentOnAssistantMessages: true}} : {})};
 }
+interface ResponseEvidence {
+  inputPresent: boolean; outputPresent: boolean; usageFinal: boolean;
+  inputTokens?:number; outputTokens?:number; cacheRead?:number; cacheWrite?:number;
+  stop?: ModelOutcome['stop']; category?: ModelOutcome['category']; invalidOutput?: boolean;
+}
+const contextCodes = ['context_length_exceeded', 'context_window_exceeded', 'prompt_too_long'];
+function responseCategory(body: any): ModelOutcome['category'] {
+  const code = body?.error?.code ?? body?.error?.type ?? body?.code;
+  return contextCodes.includes(code) ? 'context' : ['content_filter','safety','safety_error'].includes(code) ? 'safety' : undefined;
+}
+function observeUsage(event:any,evidence:ResponseEvidence,protocol:ModelConfig['protocol']) {
+        const usage = protocol === 'openai-completions' ? event.usage ?? event.choices?.[0]?.usage : event.usage ?? event.message?.usage;
+        if (usage && typeof usage === 'object') {
+          const input = protocol === 'openai-completions' ? usage.prompt_tokens : usage.input_tokens;
+          const output = protocol === 'openai-completions' ? usage.completion_tokens : usage.output_tokens;
+          for (const count of [input,output]) if (count !== undefined && count !== null && (!Number.isSafeInteger(count) || count < 0)) {
+            evidence.invalidOutput = true; throw new Error('Invalid Provider usage');
+          }
+          if(Number.isSafeInteger(input) && input>=0){evidence.inputPresent=true;evidence.inputTokens=input;}
+          if(Number.isSafeInteger(output) && output>=0){evidence.outputPresent=true;evidence.outputTokens=output;}
+          const read=protocol==='openai-completions'?usage.prompt_tokens_details?.cached_tokens:usage.cache_read_input_tokens;
+          const write=protocol==='openai-completions'?usage.prompt_tokens_details?.cache_creation_tokens:usage.cache_creation_input_tokens;
+          for(const count of [read,write])if(count!==undefined&&count!==null&&(!Number.isSafeInteger(count)||count<0)){evidence.invalidOutput=true;throw new Error('Invalid Provider cache usage');}
+          if(protocol==='openai-completions'){
+            if(input!==undefined && (read??0)+(write??0)>input){evidence.invalidOutput=true;throw new Error('Invalid Provider cache usage');}
+          }else{
+            if(read!==undefined)evidence.cacheRead=read;if(write!==undefined)evidence.cacheWrite=write;
+            if(!Number.isSafeInteger((evidence.inputTokens??0)+(evidence.cacheRead??0)+(evidence.cacheWrite??0))){evidence.invalidOutput=true;throw new Error('Invalid Provider cache usage');}
+          }
+        }
+}
+/** Reuse the already pinned native SSE framing primitive. Pi alone decodes content/tools/reasoning.
+ * Observe field presence before Pi normalizes missing fields to zero. No raw body enters observations.
+ */
+function observeResponse(response: Response, signal: AbortSignal, evidence: ResponseEvidence, protocol: ModelConfig['protocol']): Response {
+  if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
+  let bytes = 0;
+  const bounded = response.body.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk, controller) {
+    bytes += chunk.byteLength;
+    if (bytes > 8_388_608) {evidence.invalidOutput = true; throw new Error('Provider stream exceeds observation bound');}
+    controller.enqueue(chunk);
+  }}), {signal});
+  const source = new Response(bounded, {status:response.status, headers:response.headers});
+  const iterator = _iterSSEMessages(source, new AbortController());
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({async pull(controller) {
+    try {
+      const next = await iterator.next();
+      if (next.done) {if (protocol === 'openai-completions' && evidence.stop) evidence.usageFinal = true; controller.close(); return;}
+      const frame = next.value;
+      if (frame.data.trim() === '[DONE]') evidence.usageFinal = true;
+      else if (frame.data) {
+        let event: any;
+        try {event = JSON.parse(frame.data);} catch {evidence.invalidOutput = true; throw new Error('Invalid Provider stream');}
+        evidence.category ??= responseCategory(event);
+        observeUsage(event,evidence,protocol);
+        const stop = protocol === 'openai-completions' ? event.choices?.[0]?.finish_reason : event.delta?.stop_reason;
+        if (['stop','end_turn','stop_sequence'].includes(stop)) evidence.stop = 'complete';
+        else if (['length','max_tokens','model_context_window_exceeded'].includes(stop)) evidence.stop = 'length';
+        else if (['tool_calls','function_call','tool_use'].includes(stop)) evidence.stop = 'tools';
+        else if (['content_filter','refusal','sensitive'].includes(stop)) {evidence.stop = 'error'; evidence.category = 'safety';}
+        if (event.type === 'message_stop') evidence.usageFinal = true;
+      }
+      // Invalid JSON never reaches OpenAI's raw parse-error logger. Valid payload bytes stay unchanged.
+      controller.enqueue(encoder.encode(frame.raw.join('\n') + '\n\n'));
+    } catch (error) {
+      evidence.category ??= evidence.invalidOutput ? 'invalid-output' : 'network';
+      controller.error(new Error(signal.aborted ? 'CANCELLED' : 'Provider stream failed'));
+    }
+  }, async cancel() {await iterator.return(undefined);}});
+  return new Response(body, {status:response.status, headers:response.headers});
+}
 export function createPiTransport(options: PiTransportOptions): ModelTransport {
+  if (options.modelObservations !== undefined && options.modelObservations !== 'v1') throw new RuntimeFault('INVALID_REQUEST');
   if (!options.apiKey.trim()) throw new RuntimeFault('INVALID_REQUEST');
   const config = Object.freeze(structuredClone(options.model)), apiKey = options.apiKey, fetch = options.fetch;
   return async request => {
+    try {
     if (!isDeepStrictEqual(config, request.model)) throw new RuntimeFault('CONFIGURATION_CHANGED');
     if (request.signal.aborted) throw new RuntimeFault('CANCELLED');
     if (request.deferred) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
     validateThinking(config, request.thinkingLevel, request.maxOutputTokens);
+    }catch(error){
+      if(!options.modelObservations)throw error;
+      const reason=error instanceof RuntimeFault?error.reason:'INVALID_REQUEST';
+      throw new ModelFailure({model:{provider:request.model.provider,id:request.model.id,protocol:request.model.protocol},stop:reason==='CANCELLED'?'cancelled':'unknown',category:'invalid-request',physicalStatus:'not-sent',usageFinal:true,usage:{inputTokens:{kind:'known',value:0},outputTokens:{kind:'known',value:0}},diagnostic:reason==='CANCELLED'?'CANCELLED':'REQUEST_FAILED'},reason);
+    }
     const model = providerModel(config, request.maxOutputTokens);
     const context = normalizeContext({messages: request.messages.map((message): Message => {
       const timestamp = Date.now();
@@ -81,12 +161,46 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
         usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}};
     })});
     let category: ProviderFailure['category'] | undefined;
+    let observedCategory: ModelOutcome['category'];
+    let httpStatus: number | undefined;
+    let nativeReply: AssistantMessage | undefined;
+    const evidence: ResponseEvidence = {inputPresent:false,outputPresent:false,usageFinal:false};
+    const outcome = (stop: ModelOutcome['stop']): ModelOutcome => {
+      const measured = {inputTokens:(evidence.inputTokens??0)+(evidence.cacheRead??0)+(evidence.cacheWrite??0),outputTokens:evidence.outputTokens??0};
+      const known = (present: boolean, value: number) => present && Number.isSafeInteger(value) && value >= 0 ? {kind:'known' as const,value} : {kind:'unknown' as const,...(Number.isSafeInteger(value)&&value>0?{reported:value}:{})};
+      const failure = evidence.invalidOutput?'invalid-output':observedCategory ?? evidence.category ?? category;
+      const responseModel = nativeReply?.responseModel;
+      return {model:{provider:config.provider,id:config.id,protocol:config.protocol},
+        ...(responseModel && /^[A-Za-z0-9_.:/-]{1,256}$/.test(responseModel) && !responseModel.includes(apiKey) ? {responseModel} : {}),
+        stop:evidence.stop ?? stop,
+        ...(failure ? {category:failure} : stop === 'error' || stop === 'cancelled' ? {category:'unknown' as const} : {}),
+        physicalStatus:httpStatus === undefined || (httpStatus < 400 && !evidence.usageFinal && (stop === 'error' || stop === 'cancelled')) ? 'unknown' : 'response-received',
+        ...(httpStatus === undefined ? {} : {httpStatus}), usageFinal:evidence.usageFinal,
+        usage:{inputTokens:known(evidence.inputPresent,measured.inputTokens),outputTokens:known(evidence.outputPresent,measured.outputTokens)},
+        diagnostic:failure === 'context' ? 'CONTEXT_LIMIT' : stop === 'cancelled' ? 'CANCELLED' :
+          stop === 'length' ? 'OUTPUT_LIMIT' : stop === 'complete' || stop === 'tools' ? 'COMPLETE' : 'REQUEST_FAILED'};
+    };
     const guardedFetch: typeof globalThis.fetch = async (input, init) => {
       try {
         const response = await (fetch ?? globalThis.fetch)(input, {...init, redirect: 'error'});
+        httpStatus = response.status;
+        if (options.modelObservations && !response.ok) {
+          if ([401,403].includes(response.status)) observedCategory = 'authentication';
+          try {
+            const clone = response.clone(), reader = clone.body?.getReader();
+            if (reader) {
+              const chunks: Uint8Array[] = []; let bytes = 0;
+              try {for (;;) {const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 65536) break; chunks.push(part.value);}
+                if (bytes <= 65536) {const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                  observedCategory ??= responseCategory(body);observeUsage(body,evidence,config.protocol); evidence.usageFinal = true;
+                }
+              } finally {void reader.cancel().catch(()=>{});}
+            }
+          } catch { /* Missing structured cause stays unknown; never persist raw body. */ }
+        }
         category = response.status === 402 ? 'quota' : response.status === 429 ? 'rate-limit' :
-          [500, 502, 503, 504].includes(response.status) ? 'unavailable' : undefined;
-        return response;
+          (options.modelObservations ? response.status>=500 && response.status<=599 : [500,502,503,504].includes(response.status)) ? 'unavailable' : undefined;
+        return options.modelObservations && response.ok ? observeResponse(response, request.signal, evidence, config.protocol) : response;
       } catch (error) {category = 'network'; throw error;}
     };
     try {
@@ -94,16 +208,22 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
       const stream = api.streamSimple(model, context, {apiKey, signal: request.signal, maxTokens: request.maxOutputTokens,
         ...(request.thinkingLevel && request.thinkingLevel !== 'off' ? {reasoning: request.thinkingLevel} : {}),
         maxRetries: 0, cacheRetention: 'none', transport: 'sse', fetch: guardedFetch});
-      const reply = await stream.result();
-      if (!['stop', 'toolUse', 'length'].includes(reply.stopReason)) {
+      const reply = await stream.result(); nativeReply = reply;
+      if (!['stop', 'toolUse', 'length'].includes(reply.stopReason) || (options.modelObservations && (evidence.category==='safety'||evidence.invalidOutput))) {
+        if (options.modelObservations) {
+          const observed = outcome(reply.stopReason === 'aborted' ? 'cancelled' : 'error');
+          if (category && !['context','safety','invalid-output'].includes(observed.category??'')) throw new ProviderFailure(category, observed);
+          throw new ModelFailure(observed, reply.stopReason === 'aborted' ? 'CANCELLED' : evidence.invalidOutput ? 'INVALID_OUTPUT' : 'MODEL_FAILED');
+        }
         if (category) throw new ProviderFailure(category);
         throw new RuntimeFault('MODEL_FAILED');
       }
       if (reply.content.some(content => !['text', 'toolCall', 'thinking'].includes(content.type))) throw new RuntimeFault('INVALID_OUTPUT');
       return {content: reply.content.flatMap(fromPiContent),
         stop: reply.stopReason === 'stop' ? 'complete' : reply.stopReason === 'toolUse' ? 'tools' : 'length',
-        usage: modelUsage(reply.usage, request.maxOutputTokens)};
-    } catch (error) {if (error instanceof RuntimeFault) throw error; if (category) throw new ProviderFailure(category); throw new RuntimeFault('MODEL_FAILED');}
+        usage: options.modelObservations ? {inputTokens:(evidence.inputTokens??0)+(evidence.cacheRead??0)+(evidence.cacheWrite??0),outputTokens:evidence.outputPresent?evidence.outputTokens!:request.maxOutputTokens} : modelUsage(reply.usage, request.maxOutputTokens),
+        ...(options.modelObservations ? {outcome:outcome(reply.stopReason === 'stop' ? 'complete' : reply.stopReason === 'toolUse' ? 'tools' : 'length')} : {})};
+    } catch (error) {if (error instanceof RuntimeFault) throw error; if (options.modelObservations) {const observed = outcome(request.signal.aborted ? 'cancelled' : 'error'); if (category && !['context','safety','invalid-output'].includes(observed.category??'')) throw new ProviderFailure(category, observed); throw new ModelFailure(observed, request.signal.aborted ? 'CANCELLED' : 'MODEL_FAILED');} if (category) throw new ProviderFailure(category); throw new RuntimeFault('MODEL_FAILED');}
   };
 }
 function messages(context: {messages: readonly AgentMessage[]}): ModelMessage[] {
@@ -133,6 +253,70 @@ function fromCheckpoint(checkpoint: ConversationCheckpoint, config: ModelConfig,
       stopReason:message.calls?.length?'toolUse':'stop',timestamp,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
   });
 }
+/** Same synchronous guard for SDK candidates and the host's final trusted projection.
+ * Byte weighting and host allowances are conservative admission policy, never a tokenizer guarantee.
+ */
+export function admitModelRequest(request: ModelRequest, policy: ContextAdmissionPolicy): Readonly<ContextAdmission> {
+  const integer = (n: unknown, min = 0): n is number => Number.isSafeInteger(n) && (n as number) >= min;
+  // Inspect data descriptors before reading any user projection property. Object.freeze does not freeze getters.
+  const ancestors=new Set<object>();
+  const dto=(value:unknown, root=false):void => {
+    if(value===null || value===undefined || ['string','number','boolean'].includes(typeof value))return;
+    if(typeof value!=='object' || utilTypes.isProxy(value) || ancestors.has(value))throw new RuntimeFault('INVALID_REQUEST');
+    if(!Array.isArray(value) && Object.getPrototypeOf(value)!==Object.prototype)throw new RuntimeFault('INVALID_REQUEST');
+    ancestors.add(value);
+    for(const key of Reflect.ownKeys(value)){
+      const property=Object.getOwnPropertyDescriptor(value,key)!;
+      if(typeof key!=='string' || !('value' in property))throw new RuntimeFault('INVALID_REQUEST');
+      if(root && key==='signal'){if(!(property.value instanceof AbortSignal)||utilTypes.isProxy(property.value))throw new RuntimeFault('INVALID_REQUEST');}
+      else dto(property.value);
+    }
+    ancestors.delete(value);
+  };
+  dto(request,true);dto(policy);
+  if (request.signal.aborted) throw new RuntimeFault('CANCELLED');
+  if (Object.getPrototypeOf(request) !== Object.prototype || Object.getPrototypeOf(request.model) !== Object.prototype ||
+    !policy || typeof policy.policyVersion !== 'string' || !policy.policyVersion || policy.policyVersion.length > 256 ||
+    /[\r\n\u0000]/.test(policy.policyVersion) || !integer(policy.protocolOverheadTokens) || !integer(policy.safetyMarginTokens) ||
+    (policy.imageTokens !== undefined && !integer(policy.imageTokens, 1)) ||
+    Object.keys(policy).some(key => !['policyVersion', 'protocolOverheadTokens', 'safetyMarginTokens', 'imageTokens'].includes(key)) ||
+    !integer(request.model.contextWindow, 1) || !integer(request.maxOutputTokens, 1) ||
+    (request.model.maxOutputTokens !== undefined && (!integer(request.model.maxOutputTokens, 1) || request.maxOutputTokens > request.model.maxOutputTokens)) ||
+    !['openai-completions', 'anthropic-messages'].includes(request.model.protocol) || !Array.isArray(request.messages) ||
+    !isJson(request.messages) || request.messages.some(m => !['system', 'user', 'assistant', 'tool'].includes(m.role) || typeof m.text !== 'string'))
+    throw new RuntimeFault('INVALID_REQUEST');
+  validateThinking(request.model, request.thinkingLevel, request.maxOutputTokens);
+  let imageCount = 0;
+  for (const message of request.messages) {
+    if (message.images !== undefined && (!Array.isArray(message.images) || message.images.some(image =>
+      !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(image.mimeType) || typeof image.data !== 'string' ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)))) throw new RuntimeFault('INVALID_REQUEST');
+    imageCount += message.images?.length ?? 0;
+  }
+  if (imageCount && (!request.model.input?.includes('image') || policy.imageTokens === undefined))
+    throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
+  // Native system estimates are zero; count the actual system + tool declarations as text as well.
+  const native = fromCheckpoint({version:'1.0', taskId:'admission', state:'ready', messages:request.messages}, request.model, request.maxOutputTokens);
+  const piEstimateTokens = native.reduce((total, message) => total + estimateTokens(message.role === 'system' ?
+    {role:'user', content:JSON.stringify({text:message.content, tools:message.toolsAdded ?? []}), timestamp:0} : message), 0);
+  const envelopeBytes = Buffer.byteLength(JSON.stringify(request.messages));
+  const imageTokens = imageCount * (policy.imageTokens ?? 0);
+  const budgetedInputTokens = Math.max(piEstimateTokens, envelopeBytes) + imageTokens;
+  const requiredTokens = budgetedInputTokens + policy.protocolOverheadTokens + policy.safetyMarginTokens + request.maxOutputTokens;
+  if (!integer(requiredTokens) || !integer(piEstimateTokens)) throw new RuntimeFault('INVALID_REQUEST');
+  const admission: ContextAdmission = {basis:'pi-estimate-with-byte-envelope', policyVersion:policy.policyVersion,
+    model:{provider:request.model.provider, id:request.model.id, protocol:request.model.protocol}, contextWindow:request.model.contextWindow,
+    piEstimateTokens, envelopeBytes, budgetedInputTokens, protocolOverheadTokens:policy.protocolOverheadTokens, imageTokens,
+    safetyMarginTokens:policy.safetyMarginTokens, reservedOutputTokens:request.maxOutputTokens, requiredTokens};
+  if (requiredTokens > request.model.contextWindow) throw new ContextAdmissionFailure(admission);
+  // Caller must dispatch this exact projection; a fresh projection must be admitted again.
+  freeze(request);
+  return Object.freeze({...admission, model:Object.freeze(admission.model)});
+}
+
+// Internal native-generation identity; never passed to host transports or public schemas.
+export type DriverTransport = (request: import('./types.ts').ModelRequest, call?: {id:string; recovered:boolean; nativeAttempt?:number; recoveryParentId?:string}) => Promise<ModelReply>;
+export interface DriverPolicy {mode:'worker' | 'text' | 'agent'; claimRecovery(id:string):boolean}
 type ControlGuard = <T>(operation: () => Promise<T>) => Promise<T>;
 const directControl: ControlGuard = operation => operation();
 
@@ -153,18 +337,18 @@ function guardedSessionFiles(env: NodeExecutionEnv, guard: ControlGuard): NodeEx
   }});
 }
 
-export async function drive(config: ModelConfig, request: BaseRequest, transport: ModelTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>, guard: ControlGuard = directControl): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
+export async function drive(config: ModelConfig, request: BaseRequest, transport: DriverTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
   const legacy = request as AgentRequest;
   // Existing durable checkpoints retain their versioned semantics until migration.
   // Ordinary runs use the native harness without inventing a persistent contract.
   return legacy.checkpoint || legacy.saveCheckpoint || legacy.shouldYield
     ? driveCheckpoint(config, request, transport, signal, tools, activeModel, guard)
-    : driveHarness(config, request, transport, signal, tools, activeModel, undefined, guard);
+    : driveHarness(config, request, transport, signal, tools, activeModel, undefined, guard, policy);
 }
 
-async function driveHarness(config: ModelConfig, request: BaseRequest, transport: ModelTransport,
+async function driveHarness(config: ModelConfig, request: BaseRequest, transport: DriverTransport,
   signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig,
-  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl): Promise<string | {suspended: SessionBinding}> {
+  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {suspended: SessionBinding}> {
   const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
   const repo = new MemorySessionRepo();
   const model = providerModel(config, outputCap(request.limits));
@@ -172,6 +356,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
   let harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'] | undefined;
   const callIds = new Set<string>();
   let serializeBatch = false;
+  let modelCall: Parameters<DriverTransport>[1];
   let toolTail: Promise<void> = Promise.resolve();
   const assertOpen = () => {
     if (failure) throw failure;
@@ -183,15 +368,15 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
   const stream = (transcript: TranscriptContext, nativeSignal?: AbortSignal, maxTokens?: number, deferred?: {action:'poll' | 'cancel';handle:DeferredReference}, startDeferred = false) => {
     const result = createAssistantMessageEventStream();
     void (async () => {
+      let reply: ModelReply | undefined;
       try {
         assertOpen();
-        const reply = await transport({model: config, messages: messages(transcript),
+        reply = await transport({model: config, messages: messages(transcript),
           maxOutputTokens: Math.min(outputCap(request.limits), maxTokens ?? outputCap(request.limits)),
           signal: nativeSignal ? AbortSignal.any([signal, nativeSignal]) : signal,
           ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
-          ...(deferred ? {deferred} : startDeferred ? {deferred:{action:'start' as const}} : {})});
+          ...(deferred ? {deferred} : startDeferred ? {deferred:{action:'start' as const}} : {})}, modelCall);
         assertOpen();
-        if (reply.stop === 'length') throw new RuntimeFault('INVALID_OUTPUT');
         const calls = reply.content.filter(c => c.kind === 'tool');
         if ((calls.length > 0) !== (reply.stop === 'tools')) throw new RuntimeFault('INVALID_OUTPUT');
         // Keep whole-batch admission before any native tool can take effect.
@@ -210,19 +395,31 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         serializeBatch = calls.some(call => tools.find(tool => tool.name === call.name)?.executionMode === 'sequential');
         const chosen = providerModel(activeModel(), outputCap(request.limits));
         if (reply.stop === 'deferred' && (!config.deferred || !reply.deferred)) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
-        const stopReason = reply.stop === 'deferred' ? 'deferred' : reply.stop === 'complete' ? 'stop' : 'toolUse';
+        const stopReason = reply.stop === 'deferred' ? 'deferred' : reply.stop === 'complete' ? 'stop' : reply.stop === 'length' ? 'length' : 'toolUse';
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
           content: reply.content.map(toPiContent), timestamp: Date.now(),
           stopReason, ...(reply.deferred ? {deferred:{...reply.deferred,provider:model.provider,modelId:model.id,api:model.api}} : {}),
           usage: nativeUsage(reply.usage)};
+        const actualModel = providerModel(activeModel(),Math.min(outputCap(request.limits),activeModel().maxOutputTokens??outputCap(request.limits)));
+        const recoverable = isContextOverflow(message, actualModel.contextWindow) || isRecoverableLength(message, actualModel.maxTokens);
+        if (reply.stop === 'length' && policy?.mode !== 'agent') failure ??= new RuntimeFault('INVALID_OUTPUT');
+        else if (recoverable && (!modelCall || modelCall.recovered || !policy?.claimRecovery(modelCall.id)))
+          failure ??= new RuntimeFault(reply.stop === 'length' ? 'INVALID_OUTPUT' : 'MODEL_FAILED');
         result.push({type: 'start', partial: message});
         result.push({type: 'done', reason: stopReason, message});
       } catch (error) {
-        const retryable = persistent?.settings.retry?.enabled && error instanceof ProviderFailure && error.category !== 'quota';
-        if (!retryable) failure ??= error;
-        const message: AssistantMessage = {role: 'assistant', api: model.api, provider: model.provider, model: model.id,
-          content: [], timestamp: Date.now(), stopReason: 'error', errorMessage: retryable ? 'service unavailable' : 'Model request failed',
-          usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        const observed = error instanceof ModelFailure || error instanceof ProviderFailure ? error.outcome : undefined;
+        const overflow = error instanceof ModelFailure && error.reason==='MODEL_FAILED' && observed?.category==='context' && observed.physicalStatus==='response-received' &&
+          policy?.mode==='agent' && modelCall && !modelCall.recovered && policy.claimRecovery(modelCall.id);
+        const retryable = persistent?.settings.retry?.enabled && !modelCall?.recovered && error instanceof ProviderFailure && error.category !== 'quota' && observed?.physicalStatus!=='unknown';
+        if (!retryable && !overflow) failure ??= error;
+        const chosen = providerModel(activeModel(), outputCap(request.limits));
+        const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
+          content: reply?.content.map(toPiContent) ?? [], timestamp: Date.now(), stopReason: 'error',
+          errorMessage: observed?.category === 'context' ? 'context_length_exceeded' : error instanceof ProviderFailure ?
+            ({quota:'quota exceeded', 'rate-limit':'rate limit', unavailable:'service unavailable', network:'network error'} as const)[error.category] :
+            error instanceof RuntimeFault ? error.reason : 'MODEL_FAILED',
+          usage: reply ? nativeUsage(reply.usage) : observed ? nativeUsage({inputTokens:observed.usage.inputTokens.kind==='known'?observed.usage.inputTokens.value:0,outputTokens:observed.usage.outputTokens.kind==='known'?observed.usage.outputTokens.value:0}) : {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
             cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}};
         result.push({type: 'error', reason: 'error', error: message});
       }
@@ -266,12 +463,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
                   getMemo: name => invocation.getMemo(name), setMemo: (name, value) => invocation.setMemo(name, value),
                   update: (value, durable = false) => {if (Buffer.byteLength(JSON.stringify(value)) > 1_048_576) throw new RuntimeFault('INVALID_REQUEST'); _update({content:[{type:'text',text:JSON.stringify(value)}],details:null},durable ? {checkpoint:true} : undefined);}} : undefined);
               assertOpen();
-              if (tool.output === 'content') {
-                const result = value as {content: ({kind: 'text'; text: string} | {kind: 'image'; data: string; mimeType: string})[]; details?: import('./types.ts').JsonValue};
-                if (!Array.isArray(result.content) || result.content.some(c => !['text','image'].includes(c.kind))) throw new RuntimeFault('TOOL_FAILED');
-                return {content: result.content.map(c => c.kind === 'text' ? {type:'text' as const,text:c.text} : {type:'image' as const,data:c.data,mimeType:c.mimeType}), details:result.details ?? null};
-              }
-              return {content: [{type: 'text' as const, text: JSON.stringify(value)}], details: null};
+              return nativeToolResult(tool, value);
             } catch (error) {failure ??= error; throw error;}
           };
           if (!serializeBatch) return perform();
@@ -282,6 +474,17 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       })),
     }, context));
     harness = attached.harness;
+    harness.hooks.on('before_request', async event => {
+      try {
+        const state = (await guard(() => session.getValue(operationState(event.runId), context)))?.value;
+        const recoveryParentId = state && 'task' in state && state.task.reason === 'overflow' &&
+          state.task.boundary.kind === 'resume_checkpoint' ? `${event.runId}:${state.task.boundary.resumeAfter.triggerEntryId}` : undefined;
+        modelCall = event.step === 'assistant' && state?.at === 'assistant.ready' ?
+          {id: `${event.runId}:${state.generationContext.triggerEntryId}`, recovered: state.generationContext.overflowRecoveryUsed, nativeAttempt:event.attempt} :
+          {id: randomUUID(), recovered:false, ...(recoveryParentId ? {recoveryParentId} : {})};
+      } catch (error) {failure ??= error;}
+      return undefined;
+    });
     const extensions = persistent?.extensions;
     if (extensions?.transformContext) harness.hooks.on('transform_context', async e => {
       const result = await guard(async () => extensions.transformContext!({messages: messages(e), system:e.systemPrompt}));
@@ -520,7 +723,7 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
         await repo.delete(metadata!, withAbortSignal(signal, BACKGROUND_CONTEXT));
       }),
     },
-    drive: (config, request, transport, signal, tools = [], activeModel = () => config, bind = () => {}, control = async () => {}, guard = directControl) => {
+    drive: (config, request, transport, signal, tools = [], activeModel = () => config, bind = () => {}, control = async () => {}, guard = directControl, policy) => {
       const r = request as SessionRunRequest & AgentRequest;
       if (r.modelRecovery && settings.retry?.enabled) throw new RuntimeFault('INVALID_REQUEST');
       if (settings.deferred && !config.deferred) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
@@ -554,7 +757,7 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
             }
           },
           async deactivate() {live = undefined; await controlTail;},
-        }, guard), guard), guard);
+        }, guard, policy), guard), guard);
     },
   };
 }
@@ -592,10 +795,8 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
   const agent = new Agent({initialState: {model, ...(checkpointRequest.checkpoint ? {messages: fromCheckpoint({...checkpointRequest.checkpoint, messages: restoreHistory}, config, outputCap(request.limits))} : {}), systemPrompt: request.system ?? '', thinkingLevel: request.thinkingLevel ?? 'off',
     tools: tools.map(tool => ({name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as unknown as TSchema,
       ...(tool.executionMode === undefined ? {} : {executionMode: tool.executionMode}),
-      execute: async (_id: string, args: unknown, toolSignal?: AbortSignal) => restoredResults.has(_id) ? {content:[{type:'text' as const,text:restoredResults.get(_id)!.text}],details:null} : ({
-        content: [{type: 'text' as const, text: JSON.stringify(await tool.execute(args as JsonObject, toolSignal ? AbortSignal.any([signal, toolSignal]) : signal))}],
-        details: null,
-      })}))}, toolExecution: request.toolExecution ?? 'sequential',
+      execute: async (_id: string, args: unknown, toolSignal?: AbortSignal) => restoredResults.has(_id) ? {content:[{type:'text' as const,text:restoredResults.get(_id)!.text}],details:null} :
+        nativeToolResult(tool, await tool.execute(args as JsonObject, toolSignal ? AbortSignal.any([signal, toolSignal]) : signal))}))}, toolExecution: request.toolExecution ?? 'sequential',
     beforeToolCall: async context => {
       if (restoredResults.has(context.toolCall.id)) return undefined;
       if (failure || yielded) return {block: true, terminate: true, reason: 'Run stopped'};
@@ -674,12 +875,51 @@ async function driveCheckpoint(config: ModelConfig, request: BaseRequest, transp
   } finally {signal.removeEventListener('abort', abort);}
 }
 
+function nativeToolResult(tool: Tool, value: import('./types.ts').JsonValue) {
+  if (tool.output === 'content') {
+    const result = value as {content: ({kind:'text';text:string} | {kind:'image';data:string;mimeType:string})[]; details?:import('./types.ts').JsonValue};
+    if (!Array.isArray(result.content) || result.content.some(c => !['text','image'].includes(c.kind))) throw new RuntimeFault('TOOL_FAILED');
+    return {content:result.content.map(c => c.kind === 'text' ? {type:'text' as const,text:c.text} : {type:'image' as const,data:c.data,mimeType:c.mimeType}), details:result.details ?? null};
+  }
+  return {content:[{type:'text' as const,text:JSON.stringify(value)}],details:null};
+}
+
+// Keep native FileError/code compatibility while retaining the host's typed abort cause.
+// The public boundary is ToolOutcome.failureCategory; no Pi error type is exported.
+class ClassifiedFileError extends FileError {
+  readonly failureCategory: ToolFailureCategory;
+  constructor(code: ConstructorParameters<typeof FileError>[0], message: string, category: ToolFailureCategory) {
+    super(code, message); this.failureCategory = category;
+  }
+}
+export function executionFailureCategory(error: unknown): ToolFailureCategory | undefined {
+  if (error instanceof ClassifiedFileError) return error.failureCategory;
+  if (error instanceof ExecutionLimitFailure) return 'limit_exceeded';
+  if (error instanceof RuntimeFault && error.reason === 'CANCELLED') return 'cancelled';
+  if (error instanceof RuntimeFault && error.reason === 'DEADLINE_EXCEEDED') return 'timeout';
+  return undefined;
+}
+
 /** Native tool factories over explicit host capabilities, never NodeExecutionEnv for model tools. */
 export function createExecutionTools(host: ExecutionEnvironment, names: readonly ('read' | 'write' | 'edit' | 'bash')[]): Tool[] {
   host = {...host};
   if (!host.policyVersion || !isAbsolute(host.cwd)) throw new RuntimeFault('INVALID_REQUEST');
   const contextSignal = (context: Context) => context.abortSignal ?? new AbortController().signal;
-  const attempt = async <T>(operation: () => Promise<T>) => {try {return {ok: true as const, value: await operation()};} catch (e) {return {ok: false as const, error: new FileError('permission_denied', 'Host file operation failed', undefined, e instanceof Error ? e : undefined)};}};
+  const fileFailure = (error: unknown) => {
+    const reason = error instanceof RuntimeFault ? error.reason : undefined;
+    if (reason === 'BUDGET_EXHAUSTED') throw new ExecutionLimitFailure();
+    const codes: Record<string, ConstructorParameters<typeof FileError>[0]> = {ENOENT:'not_found', ENOTDIR:'not_directory', EISDIR:'is_directory', EACCES:'permission_denied',
+      EPERM:'permission_denied', EINVAL:'invalid', ENOTSUP:'not_supported', ECANCELED:'aborted', ABORT_ERR:'aborted', ETIMEDOUT:'aborted'};
+    const errno = (error as NodeJS.ErrnoException)?.code ?? '';
+    const code = reason === 'AUTHORITY_REQUIRED' ? 'permission_denied' :
+      reason === 'CANCELLED' || reason === 'DEADLINE_EXCEEDED' ? 'aborted' :
+      reason === 'CAPABILITY_UNAVAILABLE' ? 'not_supported' : reason === 'INVALID_REQUEST' ? 'invalid' :
+      Object.hasOwn(codes, errno) ? codes[errno]! : 'unknown';
+    const category = code === 'aborted' ? reason === 'CANCELLED' ? 'cancelled' :
+      reason === 'DEADLINE_EXCEEDED' || errno === 'ETIMEDOUT' ? 'timeout' : 'cancelled' : code;
+    return new ClassifiedFileError(code, reason === 'DEADLINE_EXCEEDED' ? 'Host file operation timed out' : 'Host file operation failed', category);
+  };
+  const attempt = async <T>(operation: () => Promise<T>) => {try {return {ok: true as const, value: await operation()};} catch (error) {return {ok: false as const, error: fileFailure(error)};}};
   const unsupported = async () => ({ok: false as const, error: new FileError('not_supported', 'Capability not provided')});
   const env: ExecutionEnv = {
     cwd: host.cwd, absolutePath: path => attempt(() => host.resolvePath(path)),
@@ -700,7 +940,12 @@ export function createExecutionTools(host: ExecutionEnvironment, names: readonly
         // Host output is bounded; never advertise a spill file that was not actually retained.
         options?.onUpdate?.({kind: 'replace', output: {text: content, truncation}}, ctx);
         return {ok: true, value: {exitCode: result.exitCode, truncation}};
-      } catch(e) {return {ok:false,error:new ExecutionError('unknown','Host process operation failed',e instanceof Error?e:undefined)};}
+      } catch(error) {
+        const reason = error instanceof RuntimeFault ? error.reason : undefined;
+        const code = reason === 'CANCELLED' ? 'aborted' : reason === 'DEADLINE_EXCEEDED' ? 'timeout' :
+          reason === 'CAPABILITY_UNAVAILABLE' ? 'shell_unavailable' : 'unknown';
+        return {ok:false,error:new ExecutionError(code, 'Host process operation failed')};
+      }
     },
   };
   const factories = {read: createReadTool, write: createWriteTool, edit: createEditTool, bash: createBashTool};

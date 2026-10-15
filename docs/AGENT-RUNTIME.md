@@ -1,6 +1,6 @@
 # 跨产品 Pi Agent 接入标准 v0.3
 
-状态：本地实现标准；尚未被任何现有产品采用或通过真实接入 Gate。范围是 Agent 接入机制，不拥有业务流程、分析 IR、语义资产或产品验收。
+状态：现行标准仍为 v0.3。JuanerAI 已采用 0.5.1-r1r4.3 并接受限定离线合成、显式 opt-in 范围；正式 0.5.1 换包、真实 Provider 与生产 Gate 分别保留，见 RELEASE-v0.5.1.md。范围是 Agent 接入机制，不拥有业务流程、分析 IR、语义资产或产品验收。
 
 2026-10-07：用户同意按任务选择自主程度、保留运行护栏，替代所有任务默认 Worker、全量内容审计和仅凭回放定义完成的一刀切要求；随后授权实际解除串行/thinking 限制并同步代码与标准。SDK `0.3.0` 的增量合同见 [v0.3 说明](RELEASE-v0.3.md)。文档版本与 SDK 版本分别管理。
 
@@ -113,3 +113,13 @@ On 2026-10-09 the JuanerAI user authorized the minimal neutral checkpoint, durab
 ## SDK0.4.2候选：显式MiMo思考协议映射
 
 2026-10-11，Change005用户明确批准正式补齐MiMo思考开关并在固定交付后作有界产品对照。标准版本仍v0.3。新增可选thinkingProtocol:'mimo-chat'仅允许openai-completions及宿主已验证reasoning:true；由Pi0.86.1内部已有二值思考/续接编码器映射，不复制运行层。该显式协议下thinkingLevel省略/off发送disabled，非off发送enabled，不承诺各等级强度。旧消费者不选择此项就保持旧标准映射。该字段纳入任务不可变配置，历史消费/UNKNOWN不迁移清零。详见MIMO-THINKING-CONTRACT.md。仅本地候选，不自动推定Git发布、真实Provider通过或产品采用；当前超时原因未得到因果证实。
+
+## R1–R4 路线B受控增量（本地候选）
+
+2026-10-14用户批准先收口R1–R4，标准版本仍v0.3，真实交付身份以本轮固定候选收据为准。见[R1–R4增量合同002](R1-R4-ENGINEERING-HANDOFF.md#mini-最小-api-合同与接入说明增量002)。共享层复用Pi0.86.1单一Harness/Session/压缩/read/codec；不声明R5完整搜索或R6全面退役已实现。
+
+新Task显式配置contextAdmission并在宿主受信最终投影后、物理账本/HTTP前调用admitModelRequest，同一已获准DTO发出；估算/配置窗口/Provider实际usage分列，字节页限制不能代替窗口准入。modelObservations:'v1'须同时用于Runtime及每个PiTransport，生产BudgetLease实现recordModelUsage原子部分计量，已知0与UNKNOWN分开；未知与晚到不退款，终止仍保留物理占用和晚到事实。Tool.modelOutput提供宿主完整资料→有界完整JSON接点，ToolOutputFailure承载宿主真实已完成/UNKNOWN及已有receipt，绝不推断任意失败为未执行或soft success。资源/回执/资料视图/业务保存由宿主持有。已有purpose.fallbacks与native恢复共用逻辑请求once-extra，逐候选复核窗口、能力及接收方授权，不重放已完成/UNKNOWN工具。
+
+新增openai6.40.0直接依赖只复用Pi同版本已有SSE framing以保留usage报告状态，不引入客户端/认证/权限或第二模型引擎。旧省略新策略的固定配置、历史与包保留；新策略不得偷偷resume旧Task或在回滚时清账。本地候选通过不自动授权产品采用、历史迁移、真实Provider、发布或部署。
+
+2026-10-15 read失败载体受控修正：ToolOutcome新增可选failureCategory，将受信结构化read错误从原生factory保留到已启用观察的Session结果/audit；cancel与timeout分列，未知不猜。既有reason、效果/回执、配置与计量合同不变，原生截断续读仍为成功内容。详见[R1–R4 read增量003](R1-R4-ENGINEERING-HANDOFF.md)。不扩大产品所有权、权限或验收范围，历史API003与固定包保留。

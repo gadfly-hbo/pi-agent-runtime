@@ -1,0 +1,14 @@
+{
+  "scope": "New SDK commit files and selected release assets only",
+  "excluded": [
+    "raw local evidence archives/logs",
+    "Mini source/data archives",
+    "sessions/ledgers/runtime data",
+    "node_modules",
+    "credentials and environment files"
+  ],
+  "documentTreatment": "Current engineering handoff neutralizes device paths and SSH alias; fixed .3 and original snapshots unchanged",
+  "consumer": "Synthetic fixtures and placeholder credentials only; no network Provider requests",
+  "dependencyUrls": "Public registry URLs without auth",
+  "review": "Root screening plus independent Standards read-only review; no Mini waiver reused"
+}

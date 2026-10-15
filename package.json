@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-runtime",
-  "version": "0.4.3",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Cross-product Pi Agent integration foundation",
@@ -35,7 +35,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",
-    "@earendil-works/pi-ai": "0.86.1"
+    "@earendil-works/pi-ai": "0.86.1",
+    "openai": "6.40.0"
   },
   "peerDependencies": {
     "react": "^19.3.0"

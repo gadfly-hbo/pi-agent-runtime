@@ -1,0 +1,58 @@
+{
+  "package": {
+    "version": "0.5.1",
+    "filename": "pi-agent-runtime-0.5.1.tgz",
+    "bytes": 148236,
+    "sha256": "3af3f895a2466b7947b9b9b0025231f856e3a5c4773782c9dabd460e924bfad9",
+    "sri": "sha512-8mfN4/Aw5wr0/ur8WK9wphP+7l6BLL3IX5MwokjSvj8GGzvU5+laAVwomt/HdHXvIJJhsAdiW8Zj7BJtaS7BhQ=="
+  },
+  "sourceVerify": {
+    "command": "PI_RUN_OS_SANDBOX_TESTS=1 PI_RUN_LOCAL_PROXY_TESTS=1 TMPDIR=<task-specific-dir> npm run verify",
+    "exit": 0,
+    "corePass": 274,
+    "uiPass": 2,
+    "skip": 0,
+    "typecheck": "PASS",
+    "build": "PASS",
+    "rawLogSha256": "a6bca04cb5cff5a9a5c8fe5cfc0e53a65b44419de50ed2d9caa43c544d571758"
+  },
+  "fixedConsumer": {
+    "command": "SDK_INSTALL_CACHE=<task-isolated-cache> sh consumer-kit/RUN-OFFLINE.sh",
+    "exit": 0,
+    "publicBoundaryTests": 71,
+    "mini003Tests": 6,
+    "mini002Tests": 7,
+    "codecMatrices": 3,
+    "readCarrierOriginalScenarios": 9,
+    "strictTypes": "PASS",
+    "legacyAndOld043Task": "PASS",
+    "oldObservedR1R42Task": "PASS",
+    "projectionSamples": 18,
+    "projectionAdmitted": 16,
+    "projectionDenied": 2,
+    "projectionPhysicalCalls": 0,
+    "installedFilesMatched": 53,
+    "symlink": false,
+    "rawLogSha256": "f58cce0cf6cf2c8d47ebe1829f4f3e6f9ce88a379c768e65ac0d0e09abc98ebc"
+  },
+  "realProvider": "NOT RUN",
+  "MiniFormal051Adoption": "NOT RUN",
+  "productionParameters": "UNKNOWN",
+  "notes": [
+    "Raw synthetic logs stay local; this is a screened summary.",
+    "New formal tgz installation verified independently; does not inherit candidate install identity.",
+    "No runtime/test delta: prior causal RED/GREEN and implementation reviews reused only for matched bytes."
+  ],
+  "publicConsumerSubset": {
+    "command": "SDK_INSTALL_CACHE=<isolated-cache> sh consumer/RUN.sh",
+    "exit": 0,
+    "tests": 71,
+    "fail": 0,
+    "skip": 0,
+    "strictTypes": "PASS",
+    "legacyAndCompatibilityAndCodecProbes": "PASS",
+    "archiveBytes": 284957,
+    "archiveSha256": "6b0693cd0b06f3e54fb4c03bb846bcb617b31c61246f779bf9d02fe082f96203",
+    "rawLogSha256": "2aed8a05f0350807b7d03406fe9b3c40238530c4985d47c3dc0569d9d1aab72b"
+  }
+}
