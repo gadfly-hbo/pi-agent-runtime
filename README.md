@@ -26,16 +26,34 @@ JuanerAI 已采用原固定候选 `0.5.1-r1r4.3`（146131 bytes，SHA256 `e02175
 
 ## 本地检查
 
-已验证工具链：Node 24.21.0、npm 11.19.0。先固定工具链，再运行：
+开发操作见源码仓库根的 `AGENTS.md`（不是发行包的运行合同）；运行标准、SDK
+公共合同及消费者兼容要求不变。
+已验证工具链：Node 24.21.0、npm 11.19.0。只在环境缺失或依赖树确需重建且已有
+安装授权时运行 `npm ci --ignore-scripts`，不把重装依赖作为每次检查的前置步骤。
 
-```sh
-npm ci --ignore-scripts
-npm run verify
-npm run example
-npm run verify:package
-```
+以下是既有检查的运行时机，不增加审批阶段；命令定义以 `package.json` 为准。
 
-依赖安装需宿主授权。这里没有调用真实模型的测试命令；`example` 与测试仅用合成数据。显式完整验证还运行临时文件/本地OS沙箱与loopback HTTP，命令见0.4.0合同。
+| 时机 | 检查与完成范围 |
+|---|---|
+| 日常修改 | 根据实际影响选择 `node --experimental-strip-types --test tests/<受影响文件>.test.ts`；TypeScript 改动补 `npm run typecheck`，入口/依赖变化补适用合同检查。尽早走实际 SDK 调用路径，不逐编辑全量回归或打包。 |
+| 完整工程结果 | 固定候选，集中运行 `npm run verify`、`npm run example` 及当前合同要求的适用消费者/兼容回归，再独立审查；修正只补失效证据与关联风险。纯文档用一致性和独立审查。 |
+| 候选包交付／正式发布 | 保留公共导出/中立类型、旧调用与配置兼容、Core 不强制依赖 React，以及适用的原生会话/Harness 消费者验证。交付任何候选包均绑定实际 `.tgz`、bytes/SHA256、内容及消费者结果；正式发布还核对 Tag/Release 与下载读回。 |
+
+`verify` 包含类型、核心测试、构建和 UI 测试；默认会跳过需显式启用的 OS sandbox
+与 loopback 项。按影响及当前合同，在有效主机授权内用
+`PI_RUN_OS_SANDBOX_TESTS=1 PI_RUN_LOCAL_PROXY_TESTS=1 npm run verify` 补测；
+未运行时写明 SKIP/范围，不能把默认验证称为完整机制零跳过验证。
+
+`npm run verify:package` 会构建、打包、离线安装消费者并写入本地 artifacts；
+`npm run verify:harness-package` 会另行构建、打包、提取并复用现有精确依赖树。
+它们各自产生包，不接收外部固定包参数；后者不证明全新独立安装。按受影响能力
+和版本合同选择适用检查，并遵守安装/主机权限。拟交付的最终包必须由适用消费者
+实际验证；另打的包或仅运行源码不能继承为该包的 PASS。源码/版本/内容变化后
+重新绑定证据，旧运行证据仅在仍适用时复用，不能借用旧包安装身份。
+
+测试与 `example` 使用合成模型数据；真实 Provider 只在任务需要且已有匹配授权时
+有界验证，离线结果不证明真实模型质量或产品采用。SDK 发布与消费者采用分开，
+见 [Git 工作流](docs/GIT-WORKFLOW.md) 和当前版本合同；本地检查不是托管 CI。
 
 ## 产品消费形态
 
