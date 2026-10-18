@@ -4,7 +4,7 @@ import {Agent, AgentHarness, MemorySessionRepo, BACKGROUND_CONTEXT, withAbortSig
   DEFAULT_COMPACTION_SETTINGS, estimateTokens, formatSkillsForSystemPrompt, streamProxy, loadSourcedSkills, loadSourcedPromptTemplates, createReadTool, createWriteTool, createEditTool, createBashTool, FileError, ExecutionError, truncateTail, type ExecutionEnv, type Context, type OperationRequest, type AgentLane, type AgentMessage} from '@earendil-works/pi-agent-core';
 import {JsonlSessionRepo, laneState, operationMeta, operationResult, operationState, value, type Session, type JsonlSessionMetadata} from '@earendil-works/pi-agent-core/harness/session';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
-import {isAbsolute} from 'node:path';
+import {isAbsolute,resolve,sep} from 'node:path';
 import {isDeepStrictEqual, types as utilTypes} from 'node:util';
 import {Worker, isMainThread, parentPort, workerData} from 'node:worker_threads';
 import {randomUUID, createHash} from 'node:crypto';
@@ -18,9 +18,21 @@ import {
   type DeferredHandle, type Api, type AssistantMessage, type Message, type Model, type TranscriptContext, type TSchema, type Provider,
 } from '@earendil-works/pi-ai';
 import type {AgentRequest, BaseRequest, ConversationCheckpoint, JsonObject, ModelConfig, ModelContent, ModelMessage, ModelReply, ModelTransport, PiTransportOptions, Tool, SessionRuntimeOptions, SessionRuntime, SessionRunRequest, SessionInfo, SessionBinding, HarnessSettings, HarnessControl, HarnessControlResult, ExecutionEnvironment, ResourceLoadOptions, LoadedResources, DeferredReference, ProxyTransportOptions, ModelRequest, ContextAdmissionPolicy, ContextAdmission, ModelOutcome, ToolFailureCategory} from './types.ts';
-import {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ExecutionLimitFailure} from './errors.ts';
+import {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ExecutionLimitFailure, safeAdmissionFact} from './errors.ts';
 import {outputCap} from './policy.ts';
 import {validateThinking, isJson, freeze} from './validation.ts';
+
+/** Use Pi's native preparation and validation with the host's current trusted contract. No effects. */
+export function prepareToolArguments(parameters:JsonObject,args:JsonObject):JsonObject {
+  try {
+    if (!isJson(parameters) || parameters.type!=='object' || !isJson(args) || !args || Array.isArray(args) || typeof args!=='object' ||
+      Buffer.byteLength(JSON.stringify(parameters))>1_048_576 || Buffer.byteLength(JSON.stringify(args))>1_048_576) throw Error();
+    const prepared=validateToolArguments({name:'tool',description:'',parameters:parameters as unknown as TSchema},
+      {type:'toolCall',id:'prepare',name:'tool',arguments:args});
+    if (!isJson(prepared) || !prepared || typeof prepared!=='object' || Array.isArray(prepared) || Buffer.byteLength(JSON.stringify(prepared))>1_048_576) throw Error();
+    return prepared as JsonObject;
+  } catch {throw new RuntimeFault('INVALID_TOOL');}
+}
 
 function toPiContent(content: ModelContent): AssistantMessage['content'][number] {
   if (content.kind === 'text') return {type: 'text', text: content.text};
@@ -315,10 +327,26 @@ export function admitModelRequest(request: ModelRequest, policy: ContextAdmissio
 }
 
 // Internal native-generation identity; never passed to host transports or public schemas.
-export type DriverTransport = (request: import('./types.ts').ModelRequest, call?: {id:string; recovered:boolean; nativeAttempt?:number; recoveryParentId?:string}) => Promise<ModelReply>;
-export interface DriverPolicy {mode:'worker' | 'text' | 'agent'; claimRecovery(id:string):boolean}
+export type DriverTransport = (request: import('./types.ts').ModelRequest, call?: {id:string; recovered:boolean; nativeAttempt?:number; recoveryParentId?:string}, beforeAttempt?:()=>Promise<void>) => Promise<ModelReply>;
+export interface DriverPolicy {mode:'worker' | 'text' | 'agent'; runId:string; hasConsumption():boolean; toolAdmission?: import('./types.ts').ToolAdmissionPolicy; recordAdmission?(fact:import('./types.ts').ToolAdmissionFact):Promise<void>; claimRecovery(id:string):boolean}
 type ControlGuard = <T>(operation: () => Promise<T>) => Promise<T>;
 const directControl: ControlGuard = operation => operation();
+interface AdmissionLedger {
+  version:'1'; taskId:string; purpose?:string; policyVersion:string; authoritySessionId:string;
+  consumptionBound:boolean;counts:{name:string;used:number}[]; terminal:boolean; facts:import('./types.ts').ToolAdmissionFact[];
+}
+const admissionAddress = (taskId:string,purpose?:string)=>value<AdmissionLedger>('sdk.tool-admission.v1',createHash('sha256').update(JSON.stringify([taskId,purpose??null])).digest('hex'));
+function safeAdmissionLedger(ledger:AdmissionLedger,taskId:string,purpose?:string):AdmissionLedger{
+  const label=(v:unknown)=>typeof v==='string'&&v.length>0&&v.length<=256&&!/[\r\n\u0000]/.test(v);
+  if(!ledger||ledger.version!=='1'||ledger.taskId!==taskId||ledger.purpose!==purpose||!label(ledger.policyVersion)||
+    typeof ledger.authoritySessionId!=='string'||!/^[a-zA-Z0-9_.-]{1,128}$/.test(ledger.authoritySessionId)||typeof ledger.terminal!=='boolean'||typeof ledger.consumptionBound!=='boolean'||
+    !Array.isArray(ledger.counts)||!Array.isArray(ledger.facts)||ledger.facts.length>128||
+    ledger.counts.some(c=>!c||!label(c.name)||!Number.isSafeInteger(c.used)||c.used<0||c.used>2)||new Set(ledger.counts.map(c=>c.name)).size!==ledger.counts.length)throw new RuntimeFault('STATE_FAILED');
+  const facts=ledger.facts.map(safeAdmissionFact);
+  if(facts.some(f=>f.taskId!==taskId||f.purpose!==purpose||f.policyVersion!==ledger.policyVersion))throw new RuntimeFault('STATE_FAILED');
+  return{version:'1',taskId,...(purpose===undefined?{}:{purpose}),policyVersion:ledger.policyVersion,authoritySessionId:ledger.authoritySessionId,
+    terminal:ledger.terminal,consumptionBound:ledger.consumptionBound,counts:ledger.counts.map(c=>({name:c.name,used:c.used})),facts};
+}
 
 // Each storage operation has its own control deadline; never time the whole native lane.
 function guardedSessionFiles(env: NodeExecutionEnv, guard: ControlGuard): NodeExecutionEnv {
@@ -338,6 +366,7 @@ function guardedSessionFiles(env: NodeExecutionEnv, guard: ControlGuard): NodeEx
 }
 
 export async function drive(config: ModelConfig, request: BaseRequest, transport: DriverTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
+  if(policy?.toolAdmission)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
   const legacy = request as AgentRequest;
   // Existing durable checkpoints retain their versioned semantics until migration.
   // Ordinary runs use the native harness without inventing a persistent contract.
@@ -348,7 +377,7 @@ export async function drive(config: ModelConfig, request: BaseRequest, transport
 
 async function driveHarness(config: ModelConfig, request: BaseRequest, transport: DriverTransport,
   signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig,
-  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {suspended: SessionBinding}> {
+  persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; admissionStore:{read():Promise<AdmissionLedger|undefined>;hasTaskBinding():Promise<boolean>;authorityId():string;write(state:AdmissionLedger):Promise<void>}; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {suspended: SessionBinding}> {
   const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
   const repo = new MemorySessionRepo();
   const model = providerModel(config, outputCap(request.limits));
@@ -358,6 +387,42 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
   let serializeBatch = false;
   let modelCall: Parameters<DriverTransport>[1];
   let toolTail: Promise<void> = Promise.resolve();
+  let phaseTools: readonly Tool[] = tools;
+  let activeOperationId='';
+  const correctionCounts = new Map<string,number>();
+  let admissionLedger:AdmissionLedger|undefined;
+  type PreparedCall = {args:JsonObject; fact:import('./types.ts').ToolAdmissionFact};
+  const batchPrepared = new Map<string,PreparedCall>();
+  const digest = (input:unknown)=>createHash('sha256').update(JSON.stringify(input)).digest('hex');
+  const recordFacts=async(facts:import('./types.ts').ToolAdmissionFact[],terminal:boolean)=>{
+    const safe=facts.map(safeAdmissionFact);
+    if(admissionLedger){
+      admissionLedger={...admissionLedger,counts:[...correctionCounts].map(([name,used])=>({name,used})),terminal:admissionLedger.terminal||terminal,facts:[...admissionLedger.facts,...safe].slice(-128)};
+      await guard(()=>persistent!.admissionStore.write(admissionLedger!));
+    }
+    for(const fact of safe)await policy!.recordAdmission!(fact);
+  };
+  const rejectCalls=async(calls:Extract<ModelContent,{kind:'tool'}>[],selected:import('./types.ts').ToolView,code:NonNullable<import('./types.ts').ToolAdmissionFact['code']>)=>{
+    await recordFacts(calls.map(call=>({version:'1',taskId:request.taskId,runId:policy!.runId,...(request.purpose===undefined?{}:{purpose:request.purpose}),
+      ...(persistent?{session:{sessionId:persistent.session.metadata.id,branch:(request as SessionRunRequest).branch??'main',operationId:activeOperationId}}:{}),
+      callId:call.id,name:tools.some(t=>t.name===call.name)?call.name:'unavailable',policyVersion:policy!.toolAdmission!.policyVersion,viewVersion:selected.version,viewDigest:digest(selected),
+      rawArgumentsDigest:digest(call.arguments),disposition:'rejected',code,correctionsUsed:correctionCounts.get(call.name)??0,terminal:true})),true);
+  };
+  const view = async () => {
+    const admission = policy?.toolAdmission;
+    if (!admission) return undefined;
+    if (typeof admission.policyVersion!=='string'||!admission.policyVersion||admission.policyVersion.length>256||/[\r\n\u0000]/.test(admission.policyVersion)||![0,1].includes(admission.correctionLimit) || typeof admission.view !== 'function') throw new RuntimeFault('INVALID_REQUEST');
+    const selected = await guard(() => admission.view({taskId:request.taskId,runId:policy.runId,...(request.purpose===undefined?{}:{purpose:request.purpose}),signal}));
+    if (!isJson(selected) || typeof selected.version!=='string'||!selected.version || selected.version.length>256||/[\r\n\u0000]/.test(selected.version)||Object.keys(selected).some(k=>!['version','tools'].includes(k)) || !Array.isArray(selected.tools) || Buffer.byteLength(JSON.stringify(selected))>1_048_576) throw new RuntimeFault('INVALID_TOOL');
+    const names = new Set<string>();
+    for (const item of selected.tools) {
+      if (!item || !tools.some(t=>t.name===item.name) || names.has(item.name) || !isJson(item.parameters) || !item.parameters || item.parameters.type!=='object' ||
+        (item.description!==undefined&&typeof item.description!=='string') ||
+        Object.keys(item).some(k=>!['name','parameters','description'].includes(k))) throw new RuntimeFault('INVALID_TOOL');
+      names.add(item.name);
+    }
+    return freeze(structuredClone(selected));
+  };
   const assertOpen = () => {
     if (failure) throw failure;
     if (signal.aborted) throw new RuntimeFault('CANCELLED');
@@ -371,23 +436,88 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       let reply: ModelReply | undefined;
       try {
         assertOpen();
-        reply = await transport({model: config, messages: messages(transcript),
+        const selected = await view();
+        if (selected) {
+          phaseTools = tools.map(tool=>{const item=selected.tools.find(item=>item.name===tool.name);return item?{...tool,
+            parameters:isDeepStrictEqual(tool.parameters,item.parameters)?item.parameters:{type:'object',allOf:[tool.parameters,item.parameters]},description:item.description??tool.description}:tool;});
+          await guard(()=>harness!.setTools(nativeTools(),context));
+        }
+        const projected = messages(transcript);
+        if (selected) {
+          for (const message of projected) if (message.role==='system') message.tools=[];
+          let system=projected.find(m=>m.role==='system');
+          if(!system){system={role:'system',text:''};projected.unshift(system);}
+          system.tools=selected.tools.map(item=>{const tool=phaseTools.find(t=>t.name===item.name)!;return{name:tool.name,description:tool.description,parameters:tool.parameters};});
+        }
+        try{reply = await transport({model: config, messages: projected,
           maxOutputTokens: Math.min(outputCap(request.limits), maxTokens ?? outputCap(request.limits)),
           signal: nativeSignal ? AbortSignal.any([signal, nativeSignal]) : signal,
           ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
-          ...(deferred ? {deferred} : startDeferred ? {deferred:{action:'start' as const}} : {})}, modelCall);
+          ...(deferred ? {deferred} : startDeferred ? {deferred:{action:'start' as const}} : {})}, modelCall, selected ? async()=>{
+            assertOpen();
+            if(!isDeepStrictEqual(selected,await view())){await rejectCalls([],selected,'STALE_VIEW');throw new RuntimeFault('INVALID_TOOL');}
+            assertOpen();
+          } : undefined);}
+        finally{
+          // Empty records left by pre-dispatch denial do not establish another
+          // authority after this Task has consumed elsewhere. Budget ownership
+          // remains held until this native drive (and physical IO) settles.
+          if(admissionLedger&&!admissionLedger.consumptionBound&&policy!.hasConsumption()){
+            admissionLedger={...admissionLedger,consumptionBound:true};
+            await guard(()=>persistent!.admissionStore.write(admissionLedger!));
+          }
+        }
         assertOpen();
         const calls = reply.content.filter(c => c.kind === 'tool');
-        if ((calls.length > 0) !== (reply.stop === 'tools')) throw new RuntimeFault('INVALID_OUTPUT');
+        if(selected && !isDeepStrictEqual(selected,await view())){await rejectCalls(calls,selected,'STALE_VIEW');throw new RuntimeFault('INVALID_TOOL');}
+        if ((calls.length > 0) !== (reply.stop === 'tools')) {if(selected)await rejectCalls(calls,selected,'INVALID_CALL');throw new RuntimeFault('INVALID_OUTPUT');}
         // Keep whole-batch admission before any native tool can take effect.
+        batchPrepared.clear();
+        const invalid=new Map<string,'STRUCTURE_MISMATCH'|'HOOK_REJECTED'>();
         for (const call of calls) {
-          if (callIds.has(call.id)) throw new RuntimeFault('INVALID_TOOL');
-          const tool = tools.find(tool => tool.name === call.name);
-          if (!tool) throw new RuntimeFault('INVALID_TOOL');
-          try {validateToolArguments({...tool, parameters: tool.parameters as unknown as TSchema},
-            {type: 'toolCall', id: call.id, name: call.name, arguments: call.arguments});}
-          catch {throw new RuntimeFault('INVALID_TOOL');}
+          if (callIds.has(call.id)) {if(selected)await rejectCalls(calls,selected,'INVALID_CALL');throw new RuntimeFault('INVALID_TOOL');}
+          const tool = phaseTools.find(tool => tool.name === call.name);
+          if (!tool || selected&&!selected.tools.some(t=>t.name===call.name)){if(selected)await rejectCalls(calls,selected,'TOOL_UNAVAILABLE');throw new RuntimeFault('INVALID_TOOL');}
+          try {
+            if(selected){
+              const raw=structuredClone(call.arguments),compatible=tool.prepareArguments?tool.prepareArguments(raw):raw;
+              let prepared=prepareToolArguments(tool.parameters,compatible);
+              if(tool.argumentPolicy!=='native' && !isDeepStrictEqual(compatible,prepared))throw new RuntimeFault('INVALID_TOOL');
+              if(persistent?.extensions?.beforeTool){
+                let decision:Awaited<ReturnType<NonNullable<NonNullable<SessionRuntimeOptions['extensions']>['beforeTool']>>>;
+                try{decision=await guard(()=>persistent.extensions!.beforeTool!({name:tool.name,arguments:structuredClone(prepared)}));}
+                catch{invalid.set(call.id,'HOOK_REJECTED');throw new RuntimeFault('INVALID_TOOL');}
+                if(decision?.block){invalid.set(call.id,'HOOK_REJECTED');throw new RuntimeFault('INVALID_TOOL');}
+                if(decision?.arguments){const next=prepareToolArguments(tool.parameters,decision.arguments);if(tool.argumentPolicy!=='native'&&!isDeepStrictEqual(decision.arguments,next))throw new RuntimeFault('INVALID_TOOL');prepared=next;}
+              }
+              batchPrepared.set(call.id,{args:prepared,fact:{version:'1',taskId:request.taskId,runId:policy!.runId,...(request.purpose===undefined?{}:{purpose:request.purpose}),
+                ...(persistent?{session:{sessionId:persistent.session.metadata.id,branch:(request as SessionRunRequest).branch??'main',operationId:activeOperationId}}:{}),
+                callId:call.id,name:call.name,policyVersion:policy!.toolAdmission!.policyVersion,viewVersion:selected.version,viewDigest:digest(selected),rawArgumentsDigest:digest(call.arguments),disposition:'ready',correctionsUsed:correctionCounts.get(call.name)??0,terminal:false}});
+            }else validateToolArguments({...tool, parameters: tool.parameters as unknown as TSchema},
+              {type: 'toolCall', id: call.id, name: call.name, arguments: call.arguments});
+          }
+          catch {if(!selected)throw new RuntimeFault('INVALID_TOOL');invalid.set(call.id,invalid.get(call.id)??'STRUCTURE_MISMATCH');}
           callIds.add(call.id);
+        }
+        if(selected){
+          // Hooks may await trusted product state; their replacements cannot keep
+          // an otherwise stale phase alive while the batch is being prepared.
+          if(!isDeepStrictEqual(selected,await view())){await rejectCalls(calls,selected,'STALE_VIEW');throw new RuntimeFault('INVALID_TOOL');}
+          const names=new Set(calls.filter(c=>invalid.has(c.id)).map(c=>c.name));
+          const terminal=[...invalid.values()].includes('HOOK_REJECTED')||[...names].some(name=>(correctionCounts.get(name)??0)>=policy!.toolAdmission!.correctionLimit);
+          for(const name of names)correctionCounts.set(name,(correctionCounts.get(name)??0)+1);
+          for(const call of calls){
+            if(invalid.size){
+              const fact:import('./types.ts').ToolAdmissionFact={version:'1',taskId:request.taskId,runId:policy!.runId,...(request.purpose===undefined?{}:{purpose:request.purpose}),
+                ...(persistent?{session:{sessionId:persistent.session.metadata.id,branch:(request as SessionRunRequest).branch??'main',operationId:activeOperationId}}:{}),
+                callId:call.id,name:call.name,policyVersion:policy!.toolAdmission!.policyVersion,viewVersion:selected.version,viewDigest:digest(selected),rawArgumentsDigest:digest(call.arguments),
+                disposition:invalid.has(call.id)?'rejected':'deferred',code:invalid.has(call.id)?terminal?'CORRECTION_EXHAUSTED':invalid.get(call.id)!:'BATCH_DEFERRED',correctionsUsed:correctionCounts.get(call.name)??0,terminal};
+              batchPrepared.set(call.id,{args:{},fact});
+            }
+          }
+          await recordFacts([...batchPrepared.values()].map(c=>c.fact),terminal);
+          reply={...reply,content:reply.content.map(c=>c.kind==='tool'?{...c,arguments:batchPrepared.get(c.id)!.args}:c)};
+          await guard(()=>harness!.setTools(nativeTools(),context));
         }
         // Harness 0.86.1 uses only run.settings.toolExecution; unlike Agent,
         // it does not honor a called tool's sequential override. Preserve the
@@ -415,7 +545,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         if (!retryable && !overflow) failure ??= error;
         const chosen = providerModel(activeModel(), outputCap(request.limits));
         const message: AssistantMessage = {role: 'assistant', api: chosen.api, provider: chosen.provider, model: chosen.id,
-          content: reply?.content.map(toPiContent) ?? [], timestamp: Date.now(), stopReason: 'error',
+          content: policy?.toolAdmission ? [] : reply?.content.map(toPiContent) ?? [], timestamp: Date.now(), stopReason: 'error',
           errorMessage: observed?.category === 'context' ? 'context_length_exceeded' : error instanceof ProviderFailure ?
             ({quota:'quota exceeded', 'rate-limit':'rate limit', unavailable:'service unavailable', network:'network error'} as const)[error.category] :
             error instanceof RuntimeFault ? error.reason : 'MODEL_FAILED',
@@ -436,23 +566,15 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       cancelDeferred: async (_model: Model<Api>, handle: DeferredHandle, options?: {signal?:AbortSignal}) => {await stream(normalizeContext({messages:[]}),options?.signal,undefined,{action:'cancel',handle:JSON.parse(JSON.stringify({id:handle.id,data:handle.data}))}).result();assertOpen();}} : {}),
   };
   models.setProvider(provider);
-  try {
-    const session = persistent?.session ?? await guard(() => repo.create({}, context));
-    const attached = await guard(() => AgentHarness.create({session, models, model,
-      systemPrompt: (request.system ?? '') + (persistent?.settings.skills?.length ? '\n' + formatSkillsForSystemPrompt([...persistent.settings.skills]) : ''), thinkingLevel: request.thinkingLevel ?? 'off',
-      toolExecution: request.toolExecution ?? 'sequential',
-      steeringMode: persistent?.settings.steeringMode ?? 'all', followUpMode: persistent?.settings.followUpMode ?? 'all',
-      // Preserve current single-run policy. Sustained-session settings are separate.
-      streamOptions: {deferred: persistent?.settings.deferred ?? false},
-      retry: persistent?.settings.retry ?? {enabled: false, maxRetries: 0, baseDelayMs: 0},
-      compaction: persistent?.settings.compaction ?? {...DEFAULT_COMPACTION_SETTINGS, enabled: false},
-      entryProjectors: Object.fromEntries((persistent?.extensions?.customEntryTypes ?? []).map(type => [type, entry =>
-        fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:persistent?.extensions?.projectEntry?.({type:entry.customType,...(entry.data === undefined ? {} : {data:entry.data})}) ?? []}, config, outputCap(request.limits))])),
-      resources: {skills: [...(persistent?.settings.skills ?? [])], promptTemplates: [...(persistent?.settings.templates ?? [])]},
-      tools: tools.map(tool => ({name: tool.name, label: tool.name, description: tool.description,
-        parameters: tool.parameters as unknown as TSchema, replay: tool.replay ?? 'never' as const,
+  const nativeTools = (): import('@earendil-works/pi-agent-core').AgentHarnessTool<object | undefined>[] => phaseTools.map(tool => ({name: tool.name, label: tool.name, description: tool.description,
+        parameters: ([...batchPrepared.values()].some(c=>c.fact.name===tool.name&&c.fact.disposition!=='ready')?{type:'object',properties:{},additionalProperties:false}:tool.parameters) as unknown as TSchema, replay: tool.replay ?? 'never' as const,
         ...(tool.executionMode === undefined ? {} : {executionMode: tool.executionMode}),
         execute: async (id, args, _update, _toolContext, invocation, toolContext) => {
+          const prepared=batchPrepared.get(id);
+          if(policy?.toolAdmission){
+            if(!prepared || !isDeepStrictEqual(args,prepared.args))throw new RuntimeFault('INVALID_TOOL');
+            if(prepared.fact.disposition!=='ready')return{content:[{type:'text',text:JSON.stringify({status:prepared.fact.disposition,code:prepared.fact.code,executed:false,terminal:prepared.fact.terminal})}],details:null,terminate:prepared.fact.terminal};
+          }
           const perform = async () => {
             try {
               assertOpen();
@@ -471,7 +593,21 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
           toolTail = pending.then(() => {}, () => {});
           return pending;
         },
-      })),
+      }));
+  try {
+    const session = persistent?.session ?? await guard(() => repo.create({}, context));
+    const attached = await guard(() => AgentHarness.create({session, models, model,
+      systemPrompt: (request.system ?? '') + (persistent?.settings.skills?.length ? '\n' + formatSkillsForSystemPrompt([...persistent.settings.skills]) : ''), thinkingLevel: request.thinkingLevel ?? 'off',
+      toolExecution: request.toolExecution ?? 'sequential',
+      steeringMode: persistent?.settings.steeringMode ?? 'all', followUpMode: persistent?.settings.followUpMode ?? 'all',
+      // Preserve current single-run policy. Sustained-session settings are separate.
+      streamOptions: {deferred: persistent?.settings.deferred ?? false},
+      retry: persistent?.settings.retry ?? {enabled: false, maxRetries: 0, baseDelayMs: 0},
+      compaction: persistent?.settings.compaction ?? {...DEFAULT_COMPACTION_SETTINGS, enabled: false},
+      entryProjectors: Object.fromEntries((persistent?.extensions?.customEntryTypes ?? []).map(type => [type, entry =>
+        fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:persistent?.extensions?.projectEntry?.({type:entry.customType,...(entry.data === undefined ? {} : {data:entry.data})}) ?? []}, config, outputCap(request.limits))])),
+      resources: {skills: [...(persistent?.settings.skills ?? [])], promptTemplates: [...(persistent?.settings.templates ?? [])]},
+      tools: nativeTools(),
     }, context));
     harness = attached.harness;
     harness.hooks.on('before_request', async event => {
@@ -491,7 +627,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       return result ? {...(result.messages ? {messages:fromCheckpoint({version:'1.0',taskId:'',state:'ready',messages:result.messages},config,outputCap(request.limits))} : {}), ...(result.system === undefined ? {} : {systemPrompt:result.system})} : undefined;
     });
     if (extensions?.beforeRequest) harness.hooks.on('before_request', async e => {await guard(async () => extensions.beforeRequest!({step:e.step,attempt:e.attempt}));return undefined;});
-    if (extensions?.beforeTool) harness.hooks.on('before_tool', async e => {const result = await guard(async () => extensions.beforeTool!({name:e.toolName,arguments:e.args as JsonObject}));return result ? {...(result.arguments ? {args:result.arguments} : {}),...(result.block ? {block:{reason:result.block,terminate:true}} : {})} : undefined;});
+    if (extensions?.beforeTool && !policy?.toolAdmission) harness.hooks.on('before_tool', async e => {const result = await guard(async () => extensions.beforeTool!({name:e.toolName,arguments:e.args as JsonObject}));return result ? {...(result.arguments ? {args:result.arguments} : {}),...(result.block ? {block:{reason:result.block,terminate:true}} : {})} : undefined;});
     if (extensions?.beforeEnd) harness.hooks.on('before_run_end', () => guard(async () => extensions.beforeEnd!()));
     const sessionRequest = request as SessionRunRequest;
     const branch = persistent ? sessionRequest.branch ?? 'main' : 'main';
@@ -507,8 +643,23 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       if (decision !== 'ready') throw new RuntimeFault(decision === 'denied' ? 'AUTHORITY_REQUIRED' : 'STATE_FAILED');
       if (attached.open.length && (!['resume','abort'].includes(sessionRequest.operation ?? '') || attached.open.some(o => o.lane !== branch)))
         throw new RuntimeFault('STATE_FAILED');
+      if(policy?.toolAdmission){
+        const saved=await guard(()=>persistent.admissionStore.read());
+        if(!saved?.consumptionBound&&policy.hasConsumption()&&!await guard(()=>persistent.admissionStore.hasTaskBinding()))throw new RuntimeFault('STATE_FAILED');
+        if(saved && (saved.version!=='1'||saved.taskId!==request.taskId||saved.purpose!==request.purpose||saved.policyVersion!==policy.toolAdmission.policyVersion||
+          typeof saved.terminal!=='boolean'||!Array.isArray(saved.counts)||saved.counts.some(c=>!tools.some(t=>t.name===c.name)||!Number.isSafeInteger(c.used)||c.used<0||c.used>2)||!Array.isArray(saved.facts)))throw new RuntimeFault('STATE_FAILED');
+        admissionLedger=saved??{version:'1',taskId:request.taskId,...(request.purpose===undefined?{}:{purpose:request.purpose}),policyVersion:policy.toolAdmission.policyVersion,authoritySessionId:persistent.admissionStore.authorityId(),consumptionBound:false,counts:[],terminal:false,facts:[]};
+        for(const counter of admissionLedger.counts)correctionCounts.set(counter.name,counter.used);
+        if(admissionLedger.terminal)throw new RuntimeFault('INVALID_TOOL');
+        if(!saved)await guard(()=>persistent.admissionStore.write(admissionLedger!));
+      }
     }
     harness.hooks.on('after_tool', event => {
+      const admission=batchPrepared.get(event.toolCallId)?.fact;
+      if(admission && admission.disposition!=='ready'){
+        if(admission.terminal)failure??=new RuntimeFault('INVALID_TOOL');
+        return{isError:true,terminate:admission.terminal};
+      }
       if (event.isError) failure ??= new RuntimeFault('TOOL_FAILED');
       return failure ? {terminate: true} : undefined;
     });
@@ -523,6 +674,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
       const current = attached.open.find(o => o.lane === branch);
       if (['resume','abort'].includes(sessionRequest.operation ?? '') && !current) throw new RuntimeFault('INVALID_REQUEST');
       const operationId = current?.operationId ?? randomUUID();
+      activeOperationId=operationId;
       if (current) {
         const state = (await guard(() => session.getValue(operationState(operationId), context)))?.value;
         if (state?.at === 'tools') {
@@ -588,7 +740,7 @@ async function snapshotLane(lane: AgentLane, ctx: Context, includeContent = fals
                   ...(includeContent ? {transcript:s.transcript.map(e=>({id:e.id,parentId:e.parentId,kind:e.type,...(e.type==='message'?{message:messages({messages:[e.message]})[0]!}:{}),...('summary' in e?{summary:e.summary}:{})}))} : {})}};} finally {watch.unsubscribe();}
 }
 
-export function createSessionBackend(options: SessionRuntimeOptions): {sessions: Pick<SessionRuntime, 'create' | 'list' | 'history' | 'inspect' | 'fork' | 'delete' | 'control' | 'update' | 'result'>; drive: typeof drive} {
+export function createSessionBackend(options: SessionRuntimeOptions): {sessions: Pick<SessionRuntime, 'create' | 'list' | 'history' | 'inspect' | 'inspectFacts' | 'fork' | 'delete' | 'control' | 'update' | 'result'>; drive: typeof drive} {
   const storage = {...options.storage}, reconcile = options.reconcile, bindOperation = options.bindOperation, settings = options.harness ?? {};
   if (!options.budgets || !isAbsolute(storage.directory) || !isAbsolute(storage.cwd) ||
     !storage.policyVersion?.trim() || typeof storage.authorize !== 'function' ||
@@ -598,6 +750,18 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
   let controlTail: Promise<unknown> = Promise.resolve();
   const info = (m: JsonlSessionMetadata): SessionInfo => ({id: m.id, createdAt: m.createdAt,
     ...(m.parentSessionId === undefined ? {} : {parentSessionId: m.parentSessionId})});
+  async function lineageAuthority(metadata:{id:string;parentSessionId?:string},all:JsonlSessionMetadata[],signal:AbortSignal,guard:ControlGuard=directControl){
+    const seen=new Set<string>();let selected=metadata;
+    while(selected.parentSessionId){
+      if(seen.has(selected.id))throw new RuntimeFault('STATE_FAILED');seen.add(selected.id);
+      const parent=all.find(m=>m.id===selected.parentSessionId);
+      if(!parent)throw new RuntimeFault('STATE_FAILED');
+      try{if(!await guard(()=>storage.authorize({kind:'read',sessionId:parent.id},signal)))throw new RuntimeFault('AUTHORITY_REQUIRED');}
+      catch{throw new RuntimeFault('AUTHORITY_REQUIRED');}
+      selected=parent;
+    }
+    return selected.id;
+  }
   async function access<T>(kind: Parameters<typeof storage.authorize>[0]['kind'], sessionId: string | undefined,
     signal: AbortSignal | undefined, action: (repo: JsonlSessionRepo, metadata: JsonlSessionMetadata | undefined, signal: AbortSignal) => Promise<T>, guard: ControlGuard = directControl): Promise<T> {
     signal ??= new AbortController().signal;
@@ -631,8 +795,111 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
     const session = await guard(() => repo.open(metadata, withAbortSignal(signal, BACKGROUND_CONTEXT)));
     try {return await action(session);} finally {await guard(() => session.close(BACKGROUND_CONTEXT));}
   }
+  function admissionStore(repo:JsonlSessionRepo,session:Session,request:BaseRequest,signal:AbortSignal,guard:ControlGuard){
+    const address=admissionAddress(request.taskId,request.purpose),ctx=withAbortSignal(signal,BACKGROUND_CONTEXT);
+    let authority=session.metadata.id;
+    const atAuthority=async <T>(kind:'read'|'update',operation:(target:Session)=>Promise<T>):Promise<T>=>{
+      if(authority===session.metadata.id)return operation(session);
+      if(!/^[a-zA-Z0-9_.-]{1,128}$/.test(authority)||!await guard(()=>storage.authorize({kind,sessionId:authority},signal)))throw new RuntimeFault('AUTHORITY_REQUIRED');
+      const target=(await guard(()=>repo.list({cwd:storage.cwd},ctx))).find(m=>m.id===authority);
+      if(!target)throw new RuntimeFault('STATE_FAILED');
+      return opened(repo,target,signal,operation,guard);
+    };
+    return{
+      authorityId:()=>authority,
+      hasTaskBinding:()=>atAuthority('read',async target=>{
+        const records=await guard(()=>target.scanValues(value<AdmissionLedger>('sdk.tool-admission.v1'),ctx));
+        return records.some(record=>{if(record.value?.taskId!==request.taskId)return false;return safeAdmissionLedger(record.value,request.taskId,record.value.purpose).consumptionBound;});
+      }),
+      read:async()=>{
+        const stored=(await guard(()=>session.getValue(address,ctx)))?.value;
+        authority=stored===undefined?await lineageAuthority(session.metadata,await guard(()=>repo.list({cwd:storage.cwd},ctx)),signal,guard):safeAdmissionLedger(stored,request.taskId,request.purpose).authoritySessionId;
+        const canonical=await atAuthority('read',async target=>(await guard(()=>target.getValue(address,ctx)))?.value);
+        if(canonical===undefined&&stored===undefined)return undefined;
+        if(!canonical||canonical.authoritySessionId!==authority)throw new RuntimeFault('STATE_FAILED');
+        return safeAdmissionLedger(canonical,request.taskId,request.purpose);
+      },
+      write:async(state:AdmissionLedger)=>{
+        if(state.authoritySessionId!==authority)throw new RuntimeFault('STATE_FAILED');
+        await atAuthority('update',target=>guard(()=>target.setValue(address,state,ctx)));
+        if(authority!==session.metadata.id)await guard(()=>session.setValue(address,state,ctx));
+      },
+    };
+  }
   return {
     sessions: {
+      inspectFacts:async input=>{
+        const signal=input.signal??new AbortController().signal,ctx=withAbortSignal(signal,BACKGROUND_CONTEXT),branch=input.branch??'main';
+        const label=(v:unknown)=>typeof v==='string'&&v.length>0&&v.length<=256&&!/[\r\n\u0000]/.test(v);
+        if(!/^[a-zA-Z0-9_.-]{1,128}$/.test(input.sessionId)||!label(input.taskId)||!label(branch)||(input.purpose!==undefined&&!label(input.purpose))||signal.aborted)return{availability:'unavailable',reason:signal.aborted?'CANCELLED':'INVALID_REQUEST'};
+        try{if(!await storage.authorize({kind:'read',sessionId:input.sessionId},signal))return{availability:'unavailable',reason:'AUTHORITY_REQUIRED'};}
+        catch{return{availability:'unavailable',reason:'AUTHORITY_REQUIRED'};}
+        if(busy)return{availability:'busy'};
+        const env=new NodeExecutionEnv({cwd:storage.cwd}),root=resolve(storage.directory),observed=new Map<string,string>();
+        const canonicalRoot=await env.canonicalPath(root,ctx);
+        if(!canonicalRoot.ok)return{availability:'unavailable'};
+        const readMethods=new Set(['readTextFile','openTextLineReader','readTextLines','readBinaryFile','fileInfo','listDir','canonicalPath','exists']);
+        let blockedWrite=false,deniedRead=false;
+        const readOnly=new Proxy(env,{get(target,key){
+          if(key==='absolutePath'||key==='joinPath'){const method=Reflect.get(target,key);return method.bind(target);}
+          if(key==='cleanup')return async()=>{};
+          if(typeof key!=='string'||!readMethods.has(key))return async()=>{blockedWrite=true;return{ok:false,error:new FileError('not_supported','Passive snapshot cannot write')};};
+          return async(...args:unknown[])=>{
+            const path=resolve(String(args[0]));
+            if(path!==root&&!path.startsWith(root+sep)){deniedRead=true;return{ok:false,error:new FileError('permission_denied','Passive snapshot scope')};}
+            const canonical=await target.canonicalPath(path,ctx);
+            if(!canonical.ok){if(key==='exists')return target.exists(path,ctx);return canonical;}
+            const info=await target.fileInfo(path,ctx);
+            if(!info.ok)return info;
+            const expected=canonicalRoot.value+path.slice(root.length);
+            if(canonical.value!==expected||info.value.kind==='symlink'||info.value.size>16_777_216){deniedRead=true;return{ok:false,error:new FileError('not_supported','Passive snapshot unavailable')};}
+            const result=await Reflect.get(target,key).apply(target,args);
+            if(key==='readTextFile'&&result.ok)observed.set(path,createHash('sha256').update(result.value).digest('hex'));
+            return result;
+          };
+        }});
+        const repo=new JsonlSessionRepo({fileSystem:readOnly,sessionsRoot:storage.directory});
+        const openedSessions:Session[]=[];
+        try{
+          const all=await repo.list({cwd:storage.cwd},ctx),meta=all.find(m=>m.id===input.sessionId);
+          if(!meta)return{availability:'unavailable'};
+          const session=await repo.open(meta,ctx);openedSessions.push(session);
+          const lane=await session.getValue(laneState(branch),ctx),current=lane?.value.currentOperationId;
+          if(lane&&(!lane.value||!Array.isArray(lane.value.inbox)||lane.value.inbox.some(q=>!q||!label(q.entryId)||!['steer','followUp','nextRun','write'].includes(q.kind))))return{availability:'corrupt'};
+          if(lane&&((current!==null&&!label(current))||(lane.value.lastOperationId!==null&&!label(lane.value.lastOperationId))))return{availability:'corrupt'};
+          if(current)return{availability:'busy'};
+          const pending=null;
+          const resultId=lane?.value.lastOperationId,result=resultId?(await session.getValue(operationResult(resultId),ctx))?.value:undefined;
+          if(resultId&&!result||result&&(!label(result.operationId)||result.operationId!==resultId||!['completed','declined','aborted','failed'].includes(result.status)))return{availability:'corrupt'};
+          const queueOwner=(await session.getValue(value<{taskId:string;purpose?:string;operationId:string}>('sdk.queue-authority.v1',branch),ctx))?.value;
+          let ledger=(await session.getValue(admissionAddress(input.taskId,input.purpose),ctx))?.value;
+          if(ledger!==undefined)ledger=safeAdmissionLedger(ledger,input.taskId,input.purpose);
+          const authorityId=ledger?.authoritySessionId??await lineageAuthority(meta,all,signal);
+          if(authorityId!==session.metadata.id){
+            try{if(!await storage.authorize({kind:'read',sessionId:authorityId},signal))return{availability:'unavailable',reason:'AUTHORITY_REQUIRED'};}
+            catch{return{availability:'unavailable',reason:'AUTHORITY_REQUIRED'};}
+            const authority=all.find(m=>m.id===authorityId);if(!authority)return{availability:'unavailable'};
+            const canonical=await repo.open(authority,ctx);openedSessions.push(canonical);
+            const saved=(await canonical.getValue(admissionAddress(input.taskId,input.purpose),ctx))?.value;
+            if(saved===undefined){if(ledger)return{availability:'corrupt'};}
+            else{const selected=safeAdmissionLedger(saved,input.taskId,input.purpose);if(selected.authoritySessionId!==authorityId)return{availability:'corrupt'};ledger=selected;}
+          }
+          if(ledger&&(ledger.version!=='1'||ledger.taskId!==input.taskId||ledger.purpose!==input.purpose||typeof ledger.terminal!=='boolean'||!Array.isArray(ledger.counts)||!Array.isArray(ledger.facts)))return{availability:'corrupt'};
+          const facts=ledger?.facts.map(safeAdmissionFact);
+          if(ledger?.counts.some(c=>typeof c.name!=='string'||c.name.length>256||!Number.isSafeInteger(c.used)||c.used<0||c.used>2))return{availability:'corrupt'};
+          const tipId=await (await session.branch(branch,ctx))?.getTipId(ctx)??null;
+          if(tipId!==null&&!label(tipId))return{availability:'corrupt'};
+          for(const [path,hash]of [...observed]){const actual=await readOnly.readTextFile(path,ctx);if(!actual.ok||createHash('sha256').update(actual.value).digest('hex')!==hash)return{availability:'busy'};}
+          if(signal.aborted)return{availability:'unavailable',reason:'CANCELLED'};
+          const knownQueue=queueOwner?.taskId===input.taskId&&queueOwner.purpose===input.purpose;
+          const knownTerminal=result&&(knownQueue&&queueOwner.operationId===result.operationId||facts?.some(f=>f.session?.sessionId===input.sessionId&&f.session.operationId===result.operationId));
+          return{availability:'available',sessionId:input.sessionId,branch,tipId,pending,
+            ...(knownTerminal?{terminal:{operationId:result.operationId,status:result.status}}:{}),
+            queue:knownQueue&&lane?{availability:'known',entries:lane.value.inbox.map(q=>({entryId:q.entryId,kind:q.kind}))}:{availability:'unknown'},
+            admission:ledger?{availability:'known',policyVersion:ledger.policyVersion,terminal:ledger.terminal,corrections:ledger.counts.map(c=>({name:c.name,used:c.used})),facts:facts!}:{availability:'unknown'}};
+        }catch(error){return error instanceof RuntimeFault&&error.reason==='AUTHORITY_REQUIRED'?{availability:'unavailable',reason:'AUTHORITY_REQUIRED'}:{availability:blockedWrite?'corrupt':deniedRead?'unavailable':'corrupt'};}
+        finally{for(const session of openedSessions.reverse())await session.close(BACKGROUND_CONTEXT);await repo.close(BACKGROUND_CONTEXT);}
+      },
       control: async input => {
         const selected = live;
         if (!selected) {
@@ -711,13 +978,18 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
         return value ? {operationId:value.operationId,status:value.status,kind:value.kind,tipId:value.tipId} : undefined;
       })),
       fork: (id, branch = 'main', signal) => access('fork', id, signal, async (repo, metadata, signal) => {
+        let admissions:Awaited<ReturnType<Session['scanValues']>>=[];
         await opened(repo, metadata!, signal, async session => {
           const state = await session.getValue(laneState(branch), BACKGROUND_CONTEXT);
           // Native fork discards operation state. Never use it to erase unsettled effects or queues.
           if (!state || state.value.currentOperationId || state.value.inbox.length) throw new RuntimeFault('STATE_FAILED');
+          admissions=await session.scanValues(value('sdk.tool-admission.v1'),BACKGROUND_CONTEXT);
         });
         const forked = await repo.fork(metadata!, {scope: 'branch', branch}, withAbortSignal(signal, BACKGROUND_CONTEXT));
-        try {return info(forked.metadata);} finally {await forked.close(BACKGROUND_CONTEXT);}
+        try {
+          for(const stored of admissions)await forked.setValue(stored.address,stored.value,withAbortSignal(signal,BACKGROUND_CONTEXT));
+          return info(forked.metadata);
+        } finally {await forked.close(BACKGROUND_CONTEXT);}
       }),
       delete: (id, signal) => access('delete', id, signal, async (repo, metadata, signal) => {
         await repo.delete(metadata!, withAbortSignal(signal, BACKGROUND_CONTEXT));
@@ -733,7 +1005,7 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
         (['skill', 'template'].includes(r.operation ?? '') && !r.resourceName) ||
         (r.operation === 'navigate' && r.targetEntryId === undefined)) throw new RuntimeFault('INVALID_REQUEST');
       return access('run', r.sessionId, signal, (repo, metadata, signal) => opened(repo, metadata!, signal,
-        session => driveHarness(config, request, transport, signal, tools, activeModel, {session, reconcile, bindOperation, bind, settings, ...(options.extensions ? {extensions: options.extensions} : {}),
+        session => driveHarness(config, request, transport, signal, tools, activeModel, {session, reconcile, bindOperation, bind, settings, admissionStore:admissionStore(repo,session,request,signal,guard), ...(options.extensions ? {extensions: options.extensions} : {}),
           activate(lane, harness, binding) {
             live = {taskId: request.taskId, ...(request.purpose === undefined ? {} : {purpose:request.purpose}), sessionId: r.sessionId, branch: r.branch ?? 'main', control: async command => {
               await control(command);
@@ -892,8 +1164,18 @@ class ClassifiedFileError extends FileError {
     super(code, message); this.failureCategory = category;
   }
 }
+class ClassifiedExecutionError extends ExecutionError {
+  readonly failureCategory:ToolFailureCategory;
+  constructor(code:ConstructorParameters<typeof ExecutionError>[0],category:ToolFailureCategory){
+    super(code,'Host process operation failed');this.failureCategory=category;
+  }
+}
 export function executionFailureCategory(error: unknown): ToolFailureCategory | undefined {
   if (error instanceof ClassifiedFileError) return error.failureCategory;
+  // The native bash tool wraps our trusted process carrier in Error.cause.
+  // Never infer a category from arbitrary exception text or a plain cause object.
+  if(error instanceof ClassifiedExecutionError)return error.failureCategory;
+  if(utilTypes.isNativeError(error)&&error.cause instanceof ClassifiedExecutionError)return error.cause.failureCategory;
   if (error instanceof ExecutionLimitFailure) return 'limit_exceeded';
   if (error instanceof RuntimeFault && error.reason === 'CANCELLED') return 'cancelled';
   if (error instanceof RuntimeFault && error.reason === 'DEADLINE_EXCEEDED') return 'timeout';
@@ -944,7 +1226,7 @@ export function createExecutionTools(host: ExecutionEnvironment, names: readonly
         const reason = error instanceof RuntimeFault ? error.reason : undefined;
         const code = reason === 'CANCELLED' ? 'aborted' : reason === 'DEADLINE_EXCEEDED' ? 'timeout' :
           reason === 'CAPABILITY_UNAVAILABLE' ? 'shell_unavailable' : 'unknown';
-        return {ok:false,error:new ExecutionError(code, 'Host process operation failed')};
+        return {ok:false,error:new ClassifiedExecutionError(code,code==='timeout'?'timeout':code==='aborted'?'cancelled':code==='shell_unavailable'?'not_supported':'unknown')};
       }
     },
   };
@@ -953,12 +1235,16 @@ export function createExecutionTools(host: ExecutionEnvironment, names: readonly
     if (!(name in factories)) throw new RuntimeFault('INVALID_REQUEST');
     const native = factories[name]();
     return {name, description: native.description, parameters: native.parameters as unknown as JsonObject,
+      ...(native.prepareArguments?{prepareArguments:(args:JsonObject)=>native.prepareArguments!(args) as JsonObject}:{}),
       effect: name === 'read' ? 'read' : name === 'bash' ? 'external' : 'write', executionMode: 'sequential',
       resourceUnits: 1, policyVersion: host.policyVersion, output: 'content',
       execute: async (args, signal, invocation) => {
         const tool = native as ReturnType<typeof createReadTool>;
-        const result = await tool.execute(invocation?.toolCallId ?? randomUUID(), args as never, () => {}, {env},
-          {invocationId: invocation?.invocationId ?? randomUUID(), operationId: invocation?.operationId ?? '', turnId: '', getMemo: async () => undefined, setMemo: async () => {throw new RuntimeFault('CAPABILITY_UNAVAILABLE');}}, withAbortSignal(signal, BACKGROUND_CONTEXT));
+        const result = await tool.execute(invocation?.toolCallId ?? randomUUID(), args as never, (partial,options)=>{
+          invocation?.update(JSON.parse(JSON.stringify({content:partial.content,details:partial.details})),options?.checkpoint===true);
+        }, {env},
+          {invocationId: invocation?.invocationId ?? randomUUID(), operationId: invocation?.operationId ?? '', turnId: '',
+            getMemo: async name => invocation?.getMemo(name), setMemo: async (name,next) => {if(!invocation)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');await invocation.setMemo(name,next);}}, withAbortSignal(signal, BACKGROUND_CONTEXT));
         return JSON.parse(JSON.stringify({content: result.content.map(c => c.type === 'text' ? {kind:'text',text:c.text} : {kind:'image',data:c.data,mimeType:c.mimeType}), details: result.details}));
       }};
   });

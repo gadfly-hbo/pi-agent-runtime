@@ -1,24 +1,34 @@
 import assert from 'node:assert/strict';
 import {copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {basename, dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {installFixedConsumer} from './install-fixed-consumer.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const directory = mkdtempSync(join(tmpdir(), 'pi-sdk-consumer-'));
-const cache = join(root, '.npm-cache');
+const cache = process.env.npm_config_cache ?? join(root, '.npm-cache');
 function command(args, cwd = root) {
   const result = spawnSync('npm', args, {cwd, encoding: 'utf8', env: {...process.env, npm_config_cache: cache, npm_config_ignore_scripts: 'true'}, timeout: 60000});
   if (result.status !== 0) throw new Error(`npm command failed: ${result.stderr || result.error?.message || result.stdout}`);
   return result.stdout;
 }
-const [packed] = JSON.parse(command(['pack', '--json', '--ignore-scripts', '--pack-destination', directory]));
+const supplied=process.argv[2] ? resolve(process.argv[2]) : undefined;
+let packed;
+if(supplied){
+  copyFileSync(supplied,join(directory,basename(supplied)));
+  const contents=spawnSync('/usr/bin/tar',['-tzf',supplied],{encoding:'utf8'});assert.equal(contents.status,0,contents.stderr);
+  packed={filename:basename(supplied),files:contents.stdout.trim().split('\n').map(path=>({path:path.replace(/^package\//,'')}))};
+}else [packed]=JSON.parse(command(['pack', '--json', '--ignore-scripts', '--pack-destination', directory]));
+const selected=join(directory,packed.filename),fixedBytes=readFileSync(selected);
 assert.equal(packed.files.some(file => file.path.startsWith('artifacts/')), false);
 assert.equal(packed.files.some(file => file.path.startsWith('node_modules/')), false);
 // A separate consumer chooses its own exact compiler/types; producer lockfiles do not propagate.
-command(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--no-save', '--package-lock=false', '--prefix', directory,
-  join(directory, packed.filename), '@types/node@24.10.1', 'typescript@5.9.3']);
+const installEvidence=[];
+if(supplied)installEvidence.push(installFixedConsumer(root,directory,selected,command));
+else command(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--no-save', '--package-lock=false', '--prefix', directory,
+  selected, '@types/node@24.10.1', 'typescript@5.9.3']);
 assert.equal(existsSync(join(directory,'node_modules/react')),false,'Core consumer must not require optional UI peer');
 copyFileSync(join(root, 'examples/package-consumer.mjs'), join(directory, 'consumer.mjs'));
 copyFileSync(join(root, 'examples/package-consumer.ts'), join(directory, 'consumer.mts'));
@@ -27,8 +37,9 @@ const types = spawnSync(process.execPath, [join(directory, 'node_modules/typescr
 assert.equal(types.status, 0, types.stdout + types.stderr);
 const result = spawnSync(process.execPath, [join(directory, 'consumer.mjs')], {cwd: directory, encoding: 'utf8', timeout: 10000});
 assert.equal(result.status, 0, result.stderr); process.stdout.write(result.stdout);
-command(['install','--offline','--ignore-scripts','--no-audit','--no-fund','--no-save','--package-lock=false','--prefix',directory,
-  join(directory,packed.filename),'@types/node@24.10.1','typescript@5.9.3','react@19.3.0','react-dom@19.3.0','@types/react@19.3.0']);
+if(supplied)installEvidence.push(installFixedConsumer(root,directory,selected,command,true));
+else command(['install','--offline','--ignore-scripts','--no-audit','--no-fund','--no-save','--package-lock=false','--prefix',directory,
+  selected,'@types/node@24.10.1','typescript@5.9.3','react@19.3.0','react-dom@19.3.0','@types/react@19.3.0']);
 copyFileSync(join(root,'examples/settings-consumer.mjs'),join(directory,'settings-consumer.mjs'));
 const uiResult=spawnSync(process.execPath,[join(directory,'settings-consumer.mjs')],{cwd:directory,encoding:'utf8',timeout:10000});
 assert.equal(uiResult.status,0,uiResult.stderr);process.stdout.write(uiResult.stdout);
@@ -36,11 +47,13 @@ const installed = join(directory, 'node_modules/pi-agent-runtime/dist');
 for (const file of readdirSync(installed).filter(file => file.endsWith('.d.ts'))) {
   assert.equal(readFileSync(join(installed, file), 'utf8').includes('@earendil-works/'), false, `Pi type leaked in ${file}`);
 }
-const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+const version = JSON.parse(readFileSync(join(directory,'node_modules/pi-agent-runtime/package.json'), 'utf8')).version;
 const delivery = join(root, 'artifacts/releases', version); mkdirSync(delivery, {recursive: true});
 const bytes = readFileSync(join(directory, packed.filename));
+assert.deepEqual(bytes,fixedBytes,'Selected bytes changed during validation');
+if(supplied)assert.deepEqual(readFileSync(supplied),fixedBytes,'Supplied package was mutated');
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 const retained = join(delivery, `${sha256}-${packed.filename}`);
 copyFileSync(join(directory, packed.filename), retained);
 console.log(JSON.stringify({pack: packed.filename, files: packed.files.length, publicTypes: 'neutral', installation: 'offline', sha256, byteLength: bytes.length,
-  retainedPack: retained, disposableConsumer: directory}));
+  retainedPack: retained, disposableConsumer: directory,source:supplied??'new pack',sameBytes:true,installEvidence}));

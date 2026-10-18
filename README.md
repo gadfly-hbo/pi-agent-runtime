@@ -1,5 +1,10 @@
 # Pi Agent 接入基础包
 
+本地工程候选 `0.5.3-harness.3` 修正每次物理尝试预留/发送前的工具视图核对，保留真实工具合同到持久 Harness 执行的 opt-in 闭环；
+接口、严格/原生政策及采用边界见 [首批任务合同](docs/HARNESS-FIRST-LOOP.md)。
+固定候选已收到限定联合离线回执；本轮工程接收与 Git 交付范围、原包身份及验证映射见
+[工程接收记录](artifacts/public/v0.5.3-harness.3/README.md)。固定包未正式 Release/npm 发布。
+
 跨产品统一接法与运行机制，业务能力按产品扩展。当前正式版目标为 **0.5.1**，由已接受的 `0.5.1-r1r4.3` 固定候选晋升；运行实现不变，独立正式包的发布及验证身份见 [0.5.1说明](docs/RELEASE-v0.5.1.md) 与 GitHub Release 附件。标准仍为 **v0.3**，Pi core/ai 精确 **0.86.1**，openai 精确 **6.40.0**。
 
 原生持续会话、压缩、工具循环与 read 继续复用 Pi。R1–R4 的最终请求准入、安全错误/用量/物理状态、工具输出效果/回执及 read 失败载体见 [公共接入说明](docs/RELEASE-v0.5.1.md)。[能力台账](docs/NATIVE-HARNESS-COVERAGE.md) 分列历史机制证据与当前采用状态；没有新增 R5/R6、通用业务存储或第二运行引擎。
@@ -46,7 +51,10 @@ JuanerAI 已采用原固定候选 `0.5.1-r1r4.3`（146131 bytes，SHA256 `e02175
 
 `npm run verify:package` 会构建、打包、离线安装消费者并写入本地 artifacts；
 `npm run verify:harness-package` 会另行构建、打包、提取并复用现有精确依赖树。
-它们各自产生包，不接收外部固定包参数；后者不证明全新独立安装。按受影响能力
+默认各自产生包；验证已固定候选时，直接运行
+`node tools/verify-package.mjs /absolute/candidate.tgz` 与
+`node tools/verify-harness-package.mjs /absolute/candidate.tgz`，都使用指定原字节并离线隔离安装，
+不重新打包。可通过 `npm_config_cache` 指定已有依赖缓存。后者的默认快路径不证明全新独立安装。按受影响能力
 和版本合同选择适用检查，并遵守安装/主机权限。拟交付的最终包必须由适用消费者
 实际验证；另打的包或仅运行源码不能继承为该包的 PASS。源码/版本/内容变化后
 重新绑定证据，旧运行证据仅在仍适用时复用，不能借用旧包安装身份。

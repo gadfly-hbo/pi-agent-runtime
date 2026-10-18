@@ -1,0 +1,129 @@
+{
+  "date": "2026-10-18",
+  "node": "24.21.0",
+  "npm": "11.19.0",
+  "sourceBase": "75bade32b812879bd68131a3527b79e06ea5d87a",
+  "frozenSourceAggregateSha256": "eb7e41589bf791be453f5b0f9cba8a65d425a37ba1f29f1ffdba7ff93cf87792",
+  "packageSha256": "e6cf0c99cfbcb43ae0b197e9d45d82bae20c0c3257ba0e7bad131f6b1778e12a",
+  "commands": [
+    {
+      "name": "verify",
+      "command": "npm run verify",
+      "exit": 0,
+      "elapsedSeconds": 14.926,
+      "log": {
+        "file": "verify.log",
+        "bytes": 34447,
+        "sha256": "ffc735757653691e8db002b7ee2cd004fa75551a469837d265e60466a5d71872"
+      },
+      "evidence": "new execution for Git delivery"
+    },
+    {
+      "name": "example",
+      "command": "npm run example",
+      "exit": 0,
+      "elapsedSeconds": 0.929,
+      "log": {
+        "file": "example.log",
+        "bytes": 172,
+        "sha256": "fad871f2425e30a5b6a7a524655fd856b13b7e961baa9b5d3a0d88212bf657c6"
+      },
+      "evidence": "new execution for Git delivery"
+    },
+    {
+      "name": "same-tgz-core-ui",
+      "command": "node tools/verify-package.mjs <fixed-tgz>",
+      "exit": 0,
+      "elapsedSeconds": 13.314,
+      "log": {
+        "file": "same-tgz-core-ui.log",
+        "bytes": 1472,
+        "sha256": "d13f528b415045ad6565a1facdec6eb237efa0b3c02cabff912ca164e36ac817"
+      },
+      "evidence": "new execution for Git delivery"
+    },
+    {
+      "name": "same-tgz-harness",
+      "command": "node tools/verify-harness-package.mjs <fixed-tgz>",
+      "exit": 0,
+      "elapsedSeconds": 8.122,
+      "log": {
+        "file": "same-tgz-harness.log",
+        "bytes": 6410,
+        "sha256": "72275781acc14a8c669f1182aaeb2636deec625d8a23b5efbbf3bf4d7809bb4b"
+      },
+      "evidence": "new execution for Git delivery"
+    }
+  ],
+  "results": {
+    "verify": "typecheck/build PASS; core 329 PASS/3 SKIP; UI 2 PASS",
+    "example": "offline worker/replay/agent PASS",
+    "sameTgzCoreUi": "isolated offline exact lock install; no required React in Core; neutral types, legacy/public/UI consumers PASS",
+    "sameTgzHarness": "isolated offline exact lock install; 52 PASS/1 existing OS SKIP; public/legacy/persistent consumers PASS",
+    "builtDist": "all built dist files byte-identical to fixed tgz"
+  },
+  "reused": [
+    {
+      "scope": "same .3 tgz R1/R2/R4 consumer compatibility",
+      "result": "40 PASS/0 SKIP",
+      "reason": "unchanged fixed tgz, tests, fixture and runtime source identities; fresh same-package installation and dist comparison reconfirm binding"
+    },
+    {
+      "scope": "prior SDK .3 causal RED/GREEN and static independent candidate review",
+      "result": "preserved and still applicable",
+      "reason": "fixed implementation/tests/contracts unchanged"
+    },
+    {
+      "scope": "Mini candidate007 r2",
+      "result": "JOINT_OFFLINE_PASS_WITH_LIMITS; V006-01 closed only in007",
+      "reason": "user-forwarded immutable originals and ACK rehashed; no product rerun by SDK"
+    }
+  ],
+  "skips": [
+    "EX02 OS sandbox",
+    "FP01 OS program",
+    "PX01 local loopback proxy"
+  ],
+  "notClaimed": [
+    "hosted CI",
+    "actual Ubuntu",
+    "new OS sandbox/loopback validation",
+    "real Provider/model quality/strict support",
+    "real business data/quality",
+    "product visual/user acceptance",
+    "Desktop delivery",
+    "Mini current running adoption",
+    "formal package release"
+  ],
+  "preserved": [
+    "0.5.1,0.5.2,.1,.2,.3 packages and archives",
+    "all FAIL/BLOCKED/UNKNOWN and causal RED",
+    "Mini candidate003 through007",
+    "historical .2: two rerun PASS plus22 reused evidence, not one fresh24",
+    "Trial repair-2 and Change-007 paused"
+  ],
+  "installedByteReadback": [
+    {
+      "kind": "core-ui",
+      "installedFiles": 55,
+      "allFilesMatchFixedBytes": true
+    },
+    {
+      "kind": "harness",
+      "installedFiles": 55,
+      "allFilesMatchFixedBytes": true
+    }
+  ],
+  "verifyRawSummaries": [
+    "ℹ tests 332",
+    "ℹ pass 329",
+    "ℹ fail 0",
+    "ℹ cancelled 0",
+    "ℹ skipped 3",
+    "ℹ tests 2",
+    "ℹ pass 2",
+    "ℹ fail 0",
+    "ℹ cancelled 0",
+    "ℹ skipped 0"
+  ]
+}
