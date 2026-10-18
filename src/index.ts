@@ -1,13 +1,13 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {drive, createSessionBackend, admitModelRequest, executionFailureCategory} from './pi-adapter.ts';
-import {reasonOf, RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, safeOutcome, ToolOutputFailure, safeToolOutcome} from './errors.ts';
+import {reasonOf, RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, safeOutcome, ToolOutputFailure, safeToolOutcome, safeAdmissionFact} from './errors.ts';
 import {uncapped,outputCap} from './policy.ts';
 import {createMemoryBudgetStore} from './budget.ts';
 import {freeze, isJson, validateReply, validateRequest, validateCheckpoint} from './validation.ts';
 import type {AgentRequest, AuditEvent, BaseRequest, BudgetLease, JsonValue, ModelReply, RunResult, Runtime, RuntimeOptions, Tool, Usage, PurposeConfig, SessionRuntimeOptions, SessionRuntime, SessionBinding, UncappedBudgetLease, ModelOutcome, ToolOutcome} from './types.ts';
 export type * from './types.ts';
 export {createMemoryBudgetStore};
-export {createPiTransport, createProxyTransport, createExecutionTools, loadHarnessResources, admitModelRequest} from './pi-adapter.ts';
+export {createPiTransport, createProxyTransport, createExecutionTools, loadHarnessResources, admitModelRequest, prepareToolArguments} from './pi-adapter.ts';
 export {createLocalExecutionEnvironment} from './execution.ts';
 export {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ToolOutputFailure, ExecutionLimitFailure} from './errors.ts';
 
@@ -16,7 +16,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 }
 
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntime {
-  options = {...options, harness: freeze(structuredClone(options.harness ?? {})), ...(options.extensions ? {extensions:{...options.extensions, ...(options.extensions.customEntryTypes ? {customEntryTypes:[...options.extensions.customEntryTypes]} : {})}} : {})};
+  options = {...options, ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), harness: freeze(structuredClone(options.harness ?? {})), ...(options.extensions ? {extensions:{...options.extensions, ...(options.extensions.customEntryTypes ? {customEntryTypes:[...options.extensions.customEntryTypes]} : {})}} : {})};
   const backend = createSessionBackend(options);
   const runtime = guardedRuntime(options, (...args) => 'sessionId' in args[1] ? backend.drive(...args) : drive(...args),
     {sessionPolicy: options.storage.policyVersion, harness: options.harness});
@@ -24,7 +24,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 }
 
 function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configurationExtension?: unknown): Runtime {
-  options = {...options, ...(options.contextAdmission ? {contextAdmission:freeze(structuredClone(options.contextAdmission))} : {})};
+  options = {...options, ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), ...(options.contextAdmission ? {contextAdmission:freeze(structuredClone(options.contextAdmission))} : {})};
   const budgets = options.budgets ?? createMemoryBudgetStore();
   const model = Object.freeze(structuredClone(options.model));
   const legacyCandidates = [{model, transport: options.transport}, ...(options.fallbacks ?? []).map(candidate =>
@@ -56,7 +56,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     let sessionBinding: SessionBinding | undefined;
     let lastOutcome: Readonly<ModelOutcome> | undefined;
     const toolOutcomes: ToolOutcome[] = [];
-    const outcomeFields = () => ({...(options.modelObservations && lastOutcome ? {modelOutcome:lastOutcome} : {}),...(toolOutcomes.length?{toolOutcomes:Object.freeze(toolOutcomes.map(safeToolOutcome))}:{})});
+    const toolAdmissions: Readonly<import('./types.ts').ToolAdmissionFact>[] = [];
+    const outcomeFields = () => ({...(options.modelObservations && lastOutcome ? {modelOutcome:lastOutcome} : {}),...(toolOutcomes.length?{toolOutcomes:Object.freeze(toolOutcomes.map(safeToolOutcome))}:{}),...(toolAdmissions.length?{toolAdmissions:Object.freeze([...toolAdmissions])}:{})});
     let sequence = 0, fault: RuntimeFault | undefined;
     let auditTail: Promise<void> = Promise.resolve();
     let candidateIndex = 0, attempt = 0;
@@ -165,7 +166,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
         ...(request.toolExecution === undefined ? {} : {toolExecution: request.toolExecution}),
         ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
         tools: tools.map(({execute: _execute, ...definition}) => definition)};
-      const protectedConfiguration = {...configuration, ...(options.contextAdmission ? {contextAdmission:options.contextAdmission} : {}), ...(options.modelObservations ? {modelObservations:options.modelObservations} : {})};
+      const protectedConfiguration = {...configuration, ...(options.contextAdmission ? {contextAdmission:options.contextAdmission} : {}), ...(options.modelObservations ? {modelObservations:options.modelObservations} : {}),
+        ...(options.toolAdmission ? {toolAdmission:{policyVersion:options.toolAdmission.policyVersion,correctionLimit:options.toolAdmission.correctionLimit}} : {})};
       const signature=digest({...protectedConfiguration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})});
       const configurationId=configurationExtension===undefined ? signature : digest({configuration:{...protectedConfiguration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})},extension:configurationExtension});
       if(uncapped(request.limits)) {
@@ -181,7 +183,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       if(!uncapped(request.limits)) timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), Math.max(0, request.limits.wallTimeMs - snapshot().activeMs - (Date.now() - started)));
       await append('run.started');
       const recoveryAttempts = new Map<string, {extraAttempts:number; nativeRecovery:boolean}>();
-      const text = await driver(current().model, request, async (initialRequest, call) => {
+      const text = await driver(current().model, request, async (initialRequest, call, beforeAttempt) => {
         if ((call?.recovered && !recoveryAttempts.get(call.id)?.nativeRecovery) ||
           (call?.recoveryParentId && !recoveryAttempts.get(call.recoveryParentId)?.nativeRecovery)) throw new RuntimeFault('STATE_FAILED');
         const allowance = call ? recoveryAttempts.get(call.id) ?? {extraAttempts:0,nativeRecovery:false} : {extraAttempts:0,nativeRecovery:false};
@@ -203,6 +205,9 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           const modelRequest = freeze({...initialRequest, model: candidate.model, maxOutputTokens: maximum});
           if (options.contextAdmission) admitModelRequest(modelRequest, options.contextAdmission);
           await authorize({kind: 'model', taskId: request.taskId, runId, request: modelRequest});
+          // The native step also covers SDK fallback/retry attempts. Reconfirm
+          // its view after authorization and before another reservation/dispatch.
+          if(beforeAttempt)await beforeAttempt();
           const capped = uncapped(request.limits) || routed || candidate.model.maxOutputTokens !== undefined || maximum < request.limits.outputTokens - snapshot().outputTokens;
           if (capped && !lease!.reserveModelUpTo) throw new RuntimeFault('INVALID_REQUEST');
           const reserved = await state(() => capped ? lease!.reserveModelUpTo!(maximum) : lease!.reserveModel());
@@ -226,6 +231,15 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
             await recordOutcome(outcome,true);
             await append('model.finished',{reason:fault?.reason??'DEADLINE_EXCEEDED',modelOutcome:lastOutcome!},true);
           };
+          // Reservation/audit IO can yield to host state changes. A rejection
+          // here is proven not sent; settle zero without inventing UNKNOWN or retry.
+          if(beforeAttempt)try {await beforeAttempt();}
+          catch (error) {
+            if(options.modelObservations)await recordOutcome(safeOutcome({model:candidate.model,stop:'error',category:'invalid-request',physicalStatus:'not-sent',usageFinal:true,usage:{inputTokens:{kind:'known',value:0},outputTokens:{kind:'known',value:0}},diagnostic:'REQUEST_FAILED'}));
+            else await state(()=>protection ? (lease as UncappedBudgetLease).settleModelUsage(reserved,{inputTokens:0,outputTokens:0}) : lease!.settleModel(reserved,0));
+            await append('model.finished',{reason:reasonOf(error),...(options.modelObservations?{modelOutcome:lastOutcome!}:{})},controller.signal.aborted);
+            throw error;
+          }
           try {
             reply = freeze(structuredClone(await effect(async () => {
               const attemptController=new AbortController();let expired=false,settled=false;
@@ -344,7 +358,10 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       }})), () => current().model, binding => {sessionBinding = Object.freeze({...binding});}, async command => {
         await authorize({kind: 'control', taskId: request.taskId, runId, command});
         await append('session.control', {digest: digest(command)});
-      }, controlled, {mode, claimRecovery: id => {
+      }, controlled, {mode, runId,hasConsumption:()=>{const value=snapshot();return value.modelCalls>0||value.toolCalls>0;}, ...(options.toolAdmission ? {toolAdmission:options.toolAdmission,recordAdmission:async (fact:import('./types.ts').ToolAdmissionFact)=>{
+        const captured=safeAdmissionFact(fact);toolAdmissions.push(captured);
+        await append('tool.prepared',{toolName:captured.name,toolAdmission:captured});
+      }} : {}), claimRecovery: id => {
         const allowance = recoveryAttempts.get(id);
         if (!allowance || allowance.extraAttempts >= (request.modelRecovery?.extraAttempts ?? 1)) return false;
         allowance.extraAttempts++;

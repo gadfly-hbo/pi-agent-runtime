@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-runtime",
-  "version": "0.5.1",
+  "version": "0.5.3-harness.3",
   "private": true,
   "type": "module",
   "description": "Cross-product Pi Agent integration foundation",

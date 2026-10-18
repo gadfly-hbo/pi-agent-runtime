@@ -153,7 +153,7 @@ export interface AuditEvent {
   taskId: string;
   runId: string;
   sequence: number;
-  kind: 'run.started' | 'model.admitted' | 'model.finished' | 'tool.admitted' | 'tool.finished' | 'run.finished' | 'session.control';
+  kind: 'run.started' | 'model.admitted' | 'model.finished' | 'tool.admitted' | 'tool.finished' | 'run.finished' | 'session.control' | 'tool.prepared';
   at: string;
   provider: string;
   model: string;
@@ -166,6 +166,7 @@ export interface AuditEvent {
   failureCategory?: 'quota' | 'rate-limit' | 'unavailable' | 'network';
   modelOutcome?: Readonly<ModelOutcome>;
   toolOutcome?: Readonly<ToolOutcome>;
+  toolAdmission?: Readonly<ToolAdmissionFact>;
   session?: SessionBinding;
   invocation?: ToolInvocation;
 }
@@ -186,6 +187,8 @@ export interface PurposeConfig {
   thinkingLevel?: ThinkingLevel;
 }
 export interface RuntimeOptions {
+  /** Opt-in for createSessionRuntime.run only; plain/checkpoint entrypoints reject it. Omission preserves legacy identities. */
+  toolAdmission?: ToolAdmissionPolicy;
   /** New per-call observation/accounting semantics; pinned to new tasks only. */
   modelObservations?: 'v1';
   /** New tasks opt into a pinned full-request guard; legacy task configurations remain unchanged. */
@@ -271,6 +274,10 @@ export interface ToolOutcome {
   failureCategory?: ToolFailureCategory;
 }
 export interface Tool {
+  /** Only an explicitly approved host policy may enable native value coercion. */
+  argumentPolicy?: 'strict' | 'native';
+  /** Deterministic, effect-free tool compatibility preparation; called on a copy. */
+  prepareArguments?(args: JsonObject): JsonObject;
   modelOutput?: ToolOutputPolicy;
   /** Structured text/image output; ordinary tools retain JSON serialization. */
   output?: 'content';
@@ -284,6 +291,26 @@ export interface Tool {
   executionMode?: ToolExecutionMode;
   replay?: 'never' | 'safe';
   execute(args: JsonObject, signal: AbortSignal, invocation?: ToolExecutionContext): Promise<JsonValue>;
+}
+export interface ToolView {
+  version: string;
+  tools: readonly {name: string; parameters: JsonObject; description?: string}[];
+}
+export interface ToolAdmissionPolicy {
+  policyVersion: string;
+  /** Per task/purpose/tool, distinct from modelRecovery's physical extra attempt. */
+  correctionLimit: 0 | 1;
+  view(input: {taskId: string; runId: string; purpose?: string; signal: AbortSignal}): Promise<ToolView>;
+}
+/** Structural admission only. A ready call is not evidence that an effect executed. */
+export interface ToolAdmissionFact {
+  version: '1'; taskId: string; runId: string; purpose?: string;
+  session?: SessionBinding;
+  callId: string; name: string; policyVersion: string; viewVersion: string; viewDigest: string;
+  rawArgumentsDigest: string;
+  disposition: 'ready' | 'rejected' | 'deferred';
+  code?: 'STRUCTURE_MISMATCH' | 'BATCH_DEFERRED' | 'CORRECTION_EXHAUSTED' | 'HOOK_REJECTED' | 'STALE_VIEW' | 'TOOL_UNAVAILABLE' | 'INVALID_CALL';
+  correctionsUsed: number; terminal: boolean;
 }
 export interface ExecutionEnvironment {
   cwd: string;
@@ -313,6 +340,7 @@ export type RunResult<T> = {
   taskId: string; runId: string; usage: Usage; usageKnown: boolean;
   modelOutcome?: Readonly<ModelOutcome>;
   toolOutcomes?: readonly Readonly<ToolOutcome>[];
+  toolAdmissions?: readonly Readonly<ToolAdmissionFact>[];
 } & ({status: 'succeeded'; value: T} | {status: 'waiting'; reason: 'BUSINESS_WAIT'; checkpoint: ConversationCheckpoint} | {status: 'suspended'; reason: 'DEFERRED'; session: SessionBinding} | {status: 'failed' | 'cancelled' | 'blocked'; reason: Reason});
 export interface Runtime {
   runWorker<T>(request: WorkerRequest<T>): Promise<RunResult<T>>;
@@ -423,6 +451,8 @@ export interface LoadedResources {
   digest: string;
 }
 export interface SessionRuntime extends Runtime {
+  /** Passive snapshot: no writer acquisition, repair, operation advance or audit write. */
+  inspectFacts(input: {taskId:string; purpose?:string; sessionId:string; branch?:string; signal?:AbortSignal}): Promise<SessionFacts>;
   create(signal?: AbortSignal): Promise<SessionInfo>;
   list(signal?: AbortSignal): Promise<SessionInfo[]>;
   history(sessionId: string, branch?: string, signal?: AbortSignal): Promise<SessionEntry[]>;
@@ -437,6 +467,13 @@ export interface SessionRuntime extends Runtime {
   run(request: SessionRunRequest): Promise<RunResult<string>>;
   waitForIdle(taskId: string): Promise<void>;
 }
+export type SessionFacts = {availability:'busy'|'unavailable'|'corrupt'; reason?:Reason} | {
+  availability:'available'; sessionId:string; branch:string; tipId:string|null;
+  pending:SessionStatus['pending'];
+  terminal?:{operationId:string;status:'completed'|'declined'|'aborted'|'failed'};
+  queue:{availability:'unknown'}|{availability:'known';entries:{entryId:string;kind:string}[]};
+  admission:{availability:'unknown'}|{availability:'known';policyVersion:string;terminal:boolean;corrections:readonly {name:string;used:number}[];facts:readonly Readonly<ToolAdmissionFact>[]};
+};
 export type HarnessControl = {kind: 'steer' | 'followUp' | 'nextRun'; text: string} |
   {kind: 'cancelQueued'; entryId: string} | {kind: 'abort'} | {kind: 'snapshot'; includeContent?: boolean};
 export interface HarnessSnapshot {

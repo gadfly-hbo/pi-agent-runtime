@@ -83,3 +83,17 @@ export class ExecutionLimitFailure extends RuntimeFault {
   readonly code = 'limit_exceeded';
   constructor() {super('BUDGET_EXHAUSTED');this.name='ExecutionLimitFailure';}
 }
+
+/** Decode only the bounded admission metadata; never forward arbitrary stored properties. */
+export function safeAdmissionFact(fact:import('./types.ts').ToolAdmissionFact):Readonly<import('./types.ts').ToolAdmissionFact>{
+  const label=(v:unknown)=>typeof v==='string'&&v.length>0&&v.length<=256&&!/[\r\n\u0000]/.test(v);
+  if(fact.version!=='1'||![fact.taskId,fact.runId,fact.callId,fact.name,fact.policyVersion,fact.viewVersion].every(label)||
+    (fact.purpose!==undefined&&!label(fact.purpose))||![fact.viewDigest,fact.rawArgumentsDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v))||
+    !['ready','rejected','deferred'].includes(fact.disposition)||!Number.isSafeInteger(fact.correctionsUsed)||fact.correctionsUsed<0||fact.correctionsUsed>2||typeof fact.terminal!=='boolean'||
+    (fact.code!==undefined&&!['STRUCTURE_MISMATCH','BATCH_DEFERRED','CORRECTION_EXHAUSTED','HOOK_REJECTED','STALE_VIEW','TOOL_UNAVAILABLE','INVALID_CALL'].includes(fact.code))||
+    (fact.session&&![fact.session.sessionId,fact.session.branch,fact.session.operationId].every(label)))throw new RuntimeFault('STATE_FAILED');
+  return Object.freeze({version:'1',taskId:fact.taskId,runId:fact.runId,...(fact.purpose===undefined?{}:{purpose:fact.purpose}),callId:fact.callId,name:fact.name,
+    policyVersion:fact.policyVersion,viewVersion:fact.viewVersion,viewDigest:fact.viewDigest,rawArgumentsDigest:fact.rawArgumentsDigest,disposition:fact.disposition,
+    ...(fact.code===undefined?{}:{code:fact.code}),correctionsUsed:fact.correctionsUsed,terminal:fact.terminal,
+    ...(fact.session?{session:Object.freeze({sessionId:fact.session.sessionId,branch:fact.session.branch,operationId:fact.session.operationId})}:{})});
+}

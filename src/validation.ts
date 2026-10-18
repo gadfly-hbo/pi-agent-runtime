@@ -65,6 +65,8 @@ export function validateRequest(model: ModelConfig, request: BaseRequest, tools:
     for (const tool of tools) {
       if (!label(tool.name) || names.has(tool.name) || !['read', 'write', 'external'].includes(tool.effect) ||
         typeof tool.description !== 'string' || !integer(tool.resourceUnits) || typeof tool.execute !== 'function' ||
+        (tool.argumentPolicy!==undefined&&!['strict','native'].includes(tool.argumentPolicy)) ||
+        (tool.prepareArguments!==undefined&&typeof tool.prepareArguments!=='function') ||
         (tool.executionMode !== undefined && !['sequential', 'parallel'].includes(tool.executionMode)) ||
         (tool.modelOutput !== undefined && (!label(tool.modelOutput.policyVersion) || !integer(tool.modelOutput.maxBytes,1) || tool.modelOutput.maxBytes>1_048_576 ||
           (tool.modelOutput.project!==undefined && typeof tool.modelOutput.project!=='function') ||
