@@ -1,10 +1,10 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {drive, createSessionBackend, admitModelRequest, executionFailureCategory} from './pi-adapter.ts';
-import {reasonOf, RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, safeOutcome, ToolOutputFailure, safeToolOutcome, safeAdmissionFact} from './errors.ts';
+import {reasonOf, RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, safeOutcome, ToolOutputFailure, AcceptedToolFeedback, trustedToolFeedback, safeToolOutcome, safeAdmissionFact} from './errors.ts';
 import {uncapped,outputCap} from './policy.ts';
 import {createMemoryBudgetStore} from './budget.ts';
 import {freeze, isJson, validateReply, validateRequest, validateCheckpoint} from './validation.ts';
-import type {AgentRequest, AuditEvent, BaseRequest, BudgetLease, JsonValue, ModelReply, RunResult, Runtime, RuntimeOptions, Tool, Usage, PurposeConfig, SessionRuntimeOptions, SessionRuntime, SessionBinding, UncappedBudgetLease, ModelOutcome, ToolOutcome} from './types.ts';
+import type {AgentRequest, AuditEvent, BaseRequest, BudgetLease, JsonValue, ModelReply, RunResult, Runtime, RuntimeOptions, Tool, Usage, PurposeConfig, SessionRuntimeOptions, SessionRuntime, SessionBinding, UncappedBudgetLease, ModelOutcome, ToolOutcome, ModelAttempt, ModelAttemptFact} from './types.ts';
 export type * from './types.ts';
 export {createMemoryBudgetStore};
 export {createPiTransport, createProxyTransport, createExecutionTools, loadHarnessResources, admitModelRequest, prepareToolArguments} from './pi-adapter.ts';
@@ -16,7 +16,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 }
 
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntime {
-  options = {...options, ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), harness: freeze(structuredClone(options.harness ?? {})), ...(options.extensions ? {extensions:{...options.extensions, ...(options.extensions.customEntryTypes ? {customEntryTypes:[...options.extensions.customEntryTypes]} : {})}} : {})};
+  options = {...options, ...(options.toolFeedback?{toolFeedback:freeze(structuredClone(options.toolFeedback))}:{}), ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), harness: freeze(structuredClone(options.harness ?? {})), ...(options.extensions ? {extensions:{...options.extensions, ...(options.extensions.customEntryTypes ? {customEntryTypes:[...options.extensions.customEntryTypes]} : {})}} : {})};
   const backend = createSessionBackend(options);
   const runtime = guardedRuntime(options, (...args) => 'sessionId' in args[1] ? backend.drive(...args) : drive(...args),
     {sessionPolicy: options.storage.policyVersion, harness: options.harness});
@@ -24,7 +24,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 }
 
 function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configurationExtension?: unknown): Runtime {
-  options = {...options, ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), ...(options.contextAdmission ? {contextAdmission:freeze(structuredClone(options.contextAdmission))} : {})};
+  options = {...options, ...(options.toolFeedback?{toolFeedback:freeze(structuredClone(options.toolFeedback))}:{}), ...(options.toolAdmission?{toolAdmission:Object.freeze({...options.toolAdmission})}:{}), ...(options.contextAdmission ? {contextAdmission:freeze(structuredClone(options.contextAdmission))} : {})};
   const budgets = options.budgets ?? createMemoryBudgetStore();
   const model = Object.freeze(structuredClone(options.model));
   const legacyCandidates = [{model, transport: options.transport}, ...(options.fallbacks ?? []).map(candidate =>
@@ -57,7 +57,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     let lastOutcome: Readonly<ModelOutcome> | undefined;
     const toolOutcomes: ToolOutcome[] = [];
     const toolAdmissions: Readonly<import('./types.ts').ToolAdmissionFact>[] = [];
-    const outcomeFields = () => ({...(options.modelObservations && lastOutcome ? {modelOutcome:lastOutcome} : {}),...(toolOutcomes.length?{toolOutcomes:Object.freeze(toolOutcomes.map(safeToolOutcome))}:{}),...(toolAdmissions.length?{toolAdmissions:Object.freeze([...toolAdmissions])}:{})});
+    const attemptFacts = new Map<string,Readonly<ModelAttemptFact>>();
+    const outcomeFields = () => ({...(options.modelObservations && lastOutcome ? {modelOutcome:lastOutcome} : {}),...(options.modelAttempts?{modelAttempts:Object.freeze([...attemptFacts.values()])}:{}),...(toolOutcomes.length?{toolOutcomes:Object.freeze(toolOutcomes.map(safeToolOutcome))}:{}),...(toolAdmissions.length?{toolAdmissions:Object.freeze([...toolAdmissions])}:{})});
     let sequence = 0, fault: RuntimeFault | undefined;
     let auditTail: Promise<void> = Promise.resolve();
     let candidateIndex = 0, attempt = 0;
@@ -126,6 +127,14 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
     const work = (async (): Promise<RunResult<T>> => {try {
       assertOpen();
       if (options.modelObservations !== undefined && options.modelObservations !== 'v1') throw new RuntimeFault('INVALID_REQUEST');
+      if(options.modelAttempts!==undefined && (options.modelAttempts!=='v1'||options.modelObservations!=='v1'))throw new RuntimeFault('INVALID_REQUEST');
+      if(options.toolFeedback!==undefined){
+        if(!('sessionId' in request))throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
+        const policy=options.toolFeedback,label=(v:unknown)=>typeof v==='string'&&v.length>0&&v.length<=256&&!/[\r\n\u0000]/.test(v);
+        if(!isJson(policy)||!policy||!label(policy.policyVersion)||!Array.isArray(policy.tools)||!policy.tools.length||
+          policy.tools.some(name=>!label(name))||new Set(policy.tools).size!==policy.tools.length||Object.keys(policy).some(k=>!['policyVersion','tools'].includes(k))||
+          Buffer.byteLength(JSON.stringify(policy))>1_048_576)throw new RuntimeFault('INVALID_REQUEST');
+      }
       if (mode === 'agent') validateCheckpoint(request as AgentRequest);
       else if ((input as AgentRequest).checkpoint || (input as AgentRequest).saveCheckpoint || (input as AgentRequest).shouldYield) throw new RuntimeFault('INVALID_REQUEST');
       if (purposes) {
@@ -167,6 +176,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
         ...(request.thinkingLevel === undefined ? {} : {thinkingLevel: request.thinkingLevel}),
         tools: tools.map(({execute: _execute, ...definition}) => definition)};
       const protectedConfiguration = {...configuration, ...(options.contextAdmission ? {contextAdmission:options.contextAdmission} : {}), ...(options.modelObservations ? {modelObservations:options.modelObservations} : {}),
+        ...(options.modelAttempts?{modelAttempts:options.modelAttempts}:{}), ...(options.toolFeedback?{toolFeedback:options.toolFeedback}:{}),
         ...(options.toolAdmission ? {toolAdmission:{policyVersion:options.toolAdmission.policyVersion,correctionLimit:options.toolAdmission.correctionLimit}} : {})};
       const signature=digest({...protectedConfiguration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})});
       const configurationId=configurationExtension===undefined ? signature : digest({configuration:{...protectedConfiguration,...(request.modelRecovery ? {modelRecovery:request.modelRecovery} : {})},extension:configurationExtension});
@@ -182,7 +192,8 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
       clearTimeout(timer);
       if(!uncapped(request.limits)) timer = setTimeout(() => stop('DEADLINE_EXCEEDED'), Math.max(0, request.limits.wallTimeMs - snapshot().activeMs - (Date.now() - started)));
       await append('run.started');
-      const recoveryAttempts = new Map<string, {extraAttempts:number; nativeRecovery:boolean}>();
+      const recoveryAttempts = new Map<string, {extraAttempts:number; nativeRecovery:boolean; physicalRecoveries?:number}>();
+      const failedAttempts = new Map<string,Readonly<ModelAttempt>>();
       const text = await driver(current().model, request, async (initialRequest, call, beforeAttempt) => {
         if ((call?.recovered && !recoveryAttempts.get(call.id)?.nativeRecovery) ||
           (call?.recoveryParentId && !recoveryAttempts.get(call.recoveryParentId)?.nativeRecovery)) throw new RuntimeFault('STATE_FAILED');
@@ -192,10 +203,46 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           allowance.extraAttempts++;
         }
         if (call) recoveryAttempts.set(call.id, allowance);
+        let fallback: {parent:Readonly<ModelAttempt>; reason:'same-model'|'fallback'}|undefined;
         for (;;) {
+          const candidate = current();
+          const correlation=call?.correlation;
+          let reference:Readonly<ModelAttempt>|undefined;
+          if(options.modelAttempts){
+            if(!correlation)throw new RuntimeFault('STATE_FAILED');
+            const parent=fallback?.parent??(correlation.recovery?failedAttempts.get(correlation.parentId??correlation.scopeId):undefined);
+            if(correlation.recovery&&!parent)throw new RuntimeFault('STATE_FAILED');
+            const identity={version:'1' as const,logicalRequestId:correlation.logicalId,physicalAttemptId:randomUUID(),source:correlation.source};
+            reference=freeze(parent?{...identity,kind:'recovery',recovery:{logicalRequestId:parent.logicalRequestId,physicalAttemptId:parent.physicalAttemptId,reason:fallback?.reason??correlation.recovery!}}:{...identity,kind:'initial'});
+          }
+          let dispatched=false,reservation:number|undefined,outcomeRecorded=false,finished=false;
+          const unknownOutcome=()=>safeOutcome({model:candidate.model,stop:'unknown',physicalStatus:'unknown',usageFinal:false,usage:{inputTokens:{kind:'unknown'},outputTokens:{kind:'unknown'}},diagnostic:'UNKNOWN'});
+          if(reference)lastOutcome=unknownOutcome();
+          const appendAttempt=async(kind:'model.admitted'|'model.finished',extra:Partial<AuditEvent>={},terminal=false,late=false)=>{
+            if(!reference)return append(kind,extra,terminal);
+            if(kind==='model.finished' && finished && !late)return;
+            const observed=safeOutcome(extra.modelOutcome??lastOutcome??unknownOutcome());
+            const fact:Readonly<ModelAttemptFact>=freeze({version:'1',attempt:reference,outcome:observed,terminal:kind==='model.finished',late,...(extra.reason?{reason:extra.reason}:{})});
+            await append(kind,{...extra,modelAttempt:reference,modelAttemptFact:fact,modelOutcome:observed},terminal);
+            attemptFacts.set(reference.physicalAttemptId,fact);
+            if(kind==='model.finished'){
+              finished=true;
+              if(extra.reason || ['error','length','cancelled','unknown'].includes(observed.stop)){
+                failedAttempts.set(correlation!.scopeId,reference);
+                if(call)failedAttempts.set(call.id,reference);
+              }
+            }
+          };
+          try {
           assertOpen();
           snapshot();
-          const candidate = current();
+          if(reference?.kind==='recovery'){
+            const scope=correlation!.parentId??correlation!.scopeId;
+            const original=recoveryAttempts.get(scope)??{extraAttempts:0,nativeRecovery:false};
+            const used=original.physicalRecoveries??0;
+            if(used>=1)throw new RuntimeFault('MODEL_FAILED');
+            original.physicalRecoveries=used+1;recoveryAttempts.set(scope,original);
+          }
           const maximum = Math.min(initialRequest.maxOutputTokens, candidate.model.maxOutputTokens ?? outputCap(request.limits),
             uncapped(request.limits) ? outputCap(request.limits) : request.limits.outputTokens - snapshot().outputTokens);
           if (maximum < 1) throw new RuntimeFault('BUDGET_EXHAUSTED');
@@ -204,21 +251,27 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           if (initialRequest.messages.some(m => m.images?.length) && !candidate.model.input?.includes('image')) throw new RuntimeFault('INVALID_REQUEST');
           const modelRequest = freeze({...initialRequest, model: candidate.model, maxOutputTokens: maximum});
           if (options.contextAdmission) admitModelRequest(modelRequest, options.contextAdmission);
-          await authorize({kind: 'model', taskId: request.taskId, runId, request: modelRequest});
+          await authorize({kind: 'model', taskId: request.taskId, runId, request: modelRequest,...(reference?{modelAttempt:reference}:{})});
           // The native step also covers SDK fallback/retry attempts. Reconfirm
           // its view after authorization and before another reservation/dispatch.
           if(beforeAttempt)await beforeAttempt();
           const capped = uncapped(request.limits) || routed || candidate.model.maxOutputTokens !== undefined || maximum < request.limits.outputTokens - snapshot().outputTokens;
           if (capped && !lease!.reserveModelUpTo) throw new RuntimeFault('INVALID_REQUEST');
           const reserved = await state(() => capped ? lease!.reserveModelUpTo!(maximum) : lease!.reserveModel());
+          reservation=reserved;
           if (reserved !== maximum) throw new RuntimeFault('STATE_FAILED');
           attempt++;
-          await append('model.admitted', {digest: digest(modelRequest.messages)});
+          await appendAttempt('model.admitted', {digest: digest(modelRequest.messages)});
           let reply: ModelReply;
           if (options.modelObservations) lastOutcome=safeOutcome({model:{provider:candidate.model.provider,id:candidate.model.id,protocol:candidate.model.protocol},stop:'unknown',physicalStatus:'unknown',usageFinal:false,usage:{inputTokens:{kind:'unknown'},outputTokens:{kind:'unknown'}},diagnostic:'UNKNOWN'});
-          let outcomeRecorded=false;
           const recordOutcome = async (outcome:Readonly<ModelOutcome>, late=false) => {
             if(outcomeRecorded)return;outcomeRecorded=true;
+            if(reference && outcome.physicalStatus==='not-sent' && (!outcome.usageFinal ||
+              outcome.usage.inputTokens.kind!=='known' || outcome.usage.inputTokens.value!==0 ||
+              outcome.usage.outputTokens.kind!=='known' || outcome.usage.outputTokens.value!==0)){
+              // Contradictory/partial zero proof cannot refund or authorize another attempt.
+              outcome={...outcome,stop:'error',category:'unknown',physicalStatus:'unknown',usageFinal:false,diagnostic:'UNKNOWN'};
+            }
             lastOutcome=safeOutcome(outcome);
             await state(()=>lease!.recordModelUsage!(reserved,{
               ...(outcome.usage.inputTokens.kind==='known'?{inputTokens:outcome.usage.inputTokens.value}:outcome.usage.inputTokens.reported===undefined?{}:{inputTokens:outcome.usage.inputTokens.reported}),
@@ -229,7 +282,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           const replyOutcome = (reply:ModelReply):Readonly<ModelOutcome> => safeOutcome(reply.outcome ?? lastOutcome!);
           const lateOutcome = async (outcome:Readonly<ModelOutcome>) => {
             await recordOutcome(outcome,true);
-            await append('model.finished',{reason:fault?.reason??'DEADLINE_EXCEEDED',modelOutcome:lastOutcome!},true);
+            await appendAttempt('model.finished',{reason:fault?.reason??'DEADLINE_EXCEEDED',modelOutcome:lastOutcome!},true,true);
           };
           // Reservation/audit IO can yield to host state changes. A rejection
           // here is proven not sent; settle zero without inventing UNKNOWN or retry.
@@ -237,14 +290,18 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           catch (error) {
             if(options.modelObservations)await recordOutcome(safeOutcome({model:candidate.model,stop:'error',category:'invalid-request',physicalStatus:'not-sent',usageFinal:true,usage:{inputTokens:{kind:'known',value:0},outputTokens:{kind:'known',value:0}},diagnostic:'REQUEST_FAILED'}));
             else await state(()=>protection ? (lease as UncappedBudgetLease).settleModelUsage(reserved,{inputTokens:0,outputTokens:0}) : lease!.settleModel(reserved,0));
-            await append('model.finished',{reason:reasonOf(error),...(options.modelObservations?{modelOutcome:lastOutcome!}:{})},controller.signal.aborted);
+            await appendAttempt('model.finished',{reason:reasonOf(error),...(options.modelObservations?{modelOutcome:lastOutcome!}:{})},controller.signal.aborted);
             throw error;
           }
           try {
             reply = freeze(structuredClone(await effect(async () => {
               const attemptController=new AbortController();let expired=false,settled=false;
               const deadline=protection ? setTimeout(()=>{expired=true;attemptController.abort();setImmediate(()=>{if(!settled)stop('DEADLINE_EXCEEDED');});},protection.modelTimeoutMs) : undefined;
-              try {const result=await candidate.transport({...modelRequest,maxOutputTokens:reserved,signal:AbortSignal.any([modelRequest.signal,controller.signal,attemptController.signal])});
+              try {
+                if(reference){
+                  if(modelRequest.signal.aborted || attemptController.signal.aborted)throw new RuntimeFault('CANCELLED');
+                }
+                dispatched=true;const result=await candidate.transport({...modelRequest,maxOutputTokens:reserved,signal:AbortSignal.any([modelRequest.signal,controller.signal,attemptController.signal])});
                 if(options.modelObservations && (expired||fault||controller.signal.aborted))await lateOutcome(replyOutcome(result));
                 if(expired)throw new RuntimeFault('DEADLINE_EXCEEDED');return result;
               } catch(error){
@@ -257,40 +314,43 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
             })));
           } catch (error) {
             assertOpen();
+            if(reference && !dispatched)throw error;
             const observed = (error instanceof ModelFailure || error instanceof ProviderFailure) ? error.outcome : undefined;
             if (options.modelObservations && observed) {
               await recordOutcome(observed);
-              await append('model.finished', {reason:reasonOf(error),...(error instanceof ProviderFailure?{failureCategory:error.category}:{}),...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
-              if (observed.physicalStatus === 'unknown') throw error;
+              await appendAttempt('model.finished', {reason:reasonOf(error),...(error instanceof ProviderFailure?{failureCategory:error.category}:{}),...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
+              if (observed.physicalStatus === 'unknown' || reference && lastOutcome!.physicalStatus==='unknown') throw error;
             }
             if (error instanceof ContextAdmissionFailure) {
               // The trusted final guard must run before host physical dispatch.
               // A denied projection is known not sent; it is not an unknown Provider failure.
               if(options.modelObservations)await recordOutcome(notSentOutcome(error));
               else await state(() => protection ? (lease as UncappedBudgetLease).settleModelUsage(reserved, {inputTokens:0,outputTokens:0}) : lease!.settleModel(reserved, 0));
-              await append('model.finished', {reason:'INVALID_REQUEST',...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
+              await appendAttempt('model.finished', {reason:'INVALID_REQUEST',...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
               throw error;
             }
             if(options.modelObservations && !observed){
-              await append('model.finished',{reason:reasonOf(error),modelOutcome:lastOutcome!});
+              await appendAttempt('model.finished',{reason:reasonOf(error),modelOutcome:lastOutcome!});
               throw new ModelFailure(lastOutcome!,reasonOf(error)); // No confirmed physical state: stop native retry as well as fallback.
             }
             const timedOut=error instanceof RuntimeFault && error.reason==='DEADLINE_EXCEEDED';
             if (!timedOut && (!(error instanceof ProviderFailure) || !['quota','rate-limit','unavailable','network'].includes(error.category))) {
-              if(options.modelObservations && !observed)await append('model.finished',{reason:reasonOf(error),modelOutcome:lastOutcome!});
+              if(options.modelObservations && !observed)await appendAttempt('model.finished',{reason:reasonOf(error),modelOutcome:lastOutcome!});
               throw error;
             }
-            if (!(options.modelObservations && observed)) await append('model.finished', {reason: timedOut?'DEADLINE_EXCEEDED':'MODEL_FAILED', ...(!timedOut ? {failureCategory:(error as ProviderFailure).category}: {}),...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
+            if (!(options.modelObservations && observed)) await appendAttempt('model.finished', {reason: timedOut?'DEADLINE_EXCEEDED':'MODEL_FAILED', ...(!timedOut ? {failureCategory:(error as ProviderFailure).category}: {}),...(options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{})});
+            const beforeFallback=candidateIndex;
             if(request.modelRecovery) {
               if(allowance.extraAttempts>=request.modelRecovery.extraAttempts)throw error;
               if(candidateIndex+1<candidates.length)candidateIndex++;
               else if(error instanceof ProviderFailure && error.category==='quota')throw error;
               allowance.extraAttempts++;
             } else {if(timedOut || allowance.nativeRecovery || candidateIndex+1>=candidates.length)throw error;candidateIndex++;allowance.extraAttempts++;}
+            if(reference)fallback={parent:reference,reason:candidateIndex===beforeFallback?'same-model':'fallback'};
             continue; // Failed unknown usage keeps its reservation; tools are not restarted.
           }
           if (options.modelObservations) {
-            if(!reply.outcome){await recordOutcome(lastOutcome!);await append('model.finished',{reason:'INVALID_OUTPUT',modelOutcome:lastOutcome!});throw new ModelFailure(lastOutcome!,'INVALID_OUTPUT');}
+            if(!reply.outcome){await recordOutcome(lastOutcome!);await appendAttempt('model.finished',{reason:'INVALID_OUTPUT',modelOutcome:lastOutcome!});throw new ModelFailure(lastOutcome!,'INVALID_OUTPUT');}
             if (reply.outcome) {
               const observed=safeOutcome(reply.outcome);
               if ((observed.usage.inputTokens.kind==='known' && observed.usage.inputTokens.value!==reply.usage.inputTokens) ||
@@ -299,16 +359,33 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
             const observed = replyOutcome(reply);
             // Preserve confirmed consumption even when the returned content is invalid.
             await recordOutcome(observed);
+            if(reference && lastOutcome!.physicalStatus==='unknown'){
+              await appendAttempt('model.finished',{reason:'MODEL_FAILED',modelOutcome:lastOutcome!});
+              throw new ModelFailure(lastOutcome!);
+            }
           }
           try{validateReply(reply);}catch(error){
-            if(options.modelObservations)await append('model.finished',{reason:'INVALID_OUTPUT',modelOutcome:lastOutcome!});
+            if(options.modelObservations)await appendAttempt('model.finished',{reason:'INVALID_OUTPUT',modelOutcome:lastOutcome!});
             throw error;
           }
-          if (reply.stop === 'deferred') {if (!candidate.model.deferred || routed) throw new RuntimeFault('CAPABILITY_UNAVAILABLE'); await append('model.finished'); return reply;}
+          if (reply.stop === 'deferred') {if (!candidate.model.deferred || routed || reference) throw new RuntimeFault('CAPABILITY_UNAVAILABLE'); await appendAttempt('model.finished'); return reply;}
           if (!options.modelObservations) await state(() => protection ? (lease as UncappedBudgetLease).settleModelUsage(reserved,reply.usage) : lease!.settleModel(reserved, reply.usage.outputTokens));
-          assertOpen(); await append('model.finished', options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{});
+          assertOpen(); await appendAttempt('model.finished', options.modelObservations && lastOutcome?{modelOutcome:lastOutcome}:{});
           if (reply.usage.outputTokens > reserved) throw new RuntimeFault('BUDGET_EXHAUSTED');
           return reply;
+          }catch(error){
+            if(reference && !finished){
+              if(!dispatched){
+                lastOutcome=error instanceof ContextAdmissionFailure?notSentOutcome(error):safeOutcome({model:candidate.model,stop:controller.signal.aborted?'cancelled':'error',physicalStatus:'not-sent',usageFinal:true,
+                  usage:{inputTokens:{kind:'known',value:0},outputTokens:{kind:'known',value:0}},diagnostic:controller.signal.aborted?'CANCELLED':'REQUEST_FAILED'});
+                if(reservation!==undefined && !outcomeRecorded){
+                  await state(()=>lease!.recordModelUsage!(reservation!,{inputTokens:0,outputTokens:0,final:true}));outcomeRecorded=true;
+                }
+              }
+              await appendAttempt('model.finished',{reason:reasonOf(error),modelOutcome:lastOutcome??unknownOutcome()},true);
+            }
+            throw error;
+          }
         }
       }, controller.signal, tools.map(tool => ({...tool, execute: async (args, signal, invocation): Promise<JsonValue> => {
         try {
@@ -319,7 +396,7 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
         await authorize({kind: 'tool', taskId: request.taskId, runId, name: tool.name, effect: tool.effect, arguments: args, ...(identity ? {invocation:identity} : {})});
         await state(() => lease!.reserveTool(tool.resourceUnits));
         await append('tool.admitted', {toolName: tool.name, digest: digest(args), ...(identity ? {invocation:identity} : {})});
-        const observe = !!(options.modelObservations || tool.modelOutput);
+        const observe = !!(options.modelObservations || tool.modelOutput || options.toolFeedback);
         const outcome: ToolOutcome={name:tool.name,effect:tool.effect,status:'unknown',modelOutput:'pending',resourceUnits:tool.resourceUnits,...(identity?{invocation:identity}:{})};
         if(observe)toolOutcomes.push(outcome);
         let value: JsonValue;
@@ -327,11 +404,16 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           const deadline=protection ? setTimeout(()=>stop('DEADLINE_EXCEEDED'),protection.toolTimeoutMs) : undefined;
           try{const result=await tool.execute(args,signal,invocation);outcome.status='completed';return result;}finally{clearTimeout(deadline);}
         });} catch (error) {
-          if(error instanceof ToolOutputFailure && error.outcome.name===tool.name && error.outcome.effect===tool.effect && error.outcome.resourceUnits===tool.resourceUnits && digest(error.outcome.invocation??null)===digest(identity??null))Object.assign(outcome,error.outcome);
+          const matched=error instanceof ToolOutputFailure && error.outcome.name===tool.name && error.outcome.effect===tool.effect && error.outcome.resourceUnits===tool.resourceUnits && digest(error.outcome.invocation??null)===digest(identity??null);
+          if(matched)Object.assign(outcome,error.outcome);
           const category = executionFailureCategory(error);
           if(category!==undefined)outcome.failureCategory=category;
           outcome.modelOutput='failed';outcome.reason=fault?.reason??reasonOf(error,'TOOL_FAILED');
           if(observe && fault?.reason!=='AUDIT_FAILED')await append('tool.finished',{toolName:tool.name,toolFailed:true,toolOutcome:safeToolOutcome(outcome),...(identity?{invocation:identity}:{})},controller.signal.aborted);
+          const feedback=matched?trustedToolFeedback(error):undefined;
+          if(feedback && invocation && options.toolFeedback?.tools.includes(tool.name) && tool.effect==='read'){
+            assertOpen();throw new AcceptedToolFeedback(feedback);
+          }
           fault ??= new RuntimeFault(reasonOf(error,'TOOL_FAILED')); throw fault;
         }
         try {
@@ -354,11 +436,11 @@ function guardedRuntime(options: RuntimeOptions, driver: typeof drive, configura
           if(observe && fault?.reason!=='AUDIT_FAILED')await append('tool.finished',{toolName:tool.name,toolFailed:true,toolOutcome:safeToolOutcome(outcome),...(identity?{invocation:identity}:{})},controller.signal.aborted);
           throw observe ? new ToolOutputFailure(outcome,outcome.reason) : new RuntimeFault(outcome.reason);
         }
-        } catch (error) {fault ??= error instanceof RuntimeFault ? error : new RuntimeFault('TOOL_FAILED'); throw fault;}
+        } catch (error) {if(error instanceof AcceptedToolFeedback)throw error;fault ??= error instanceof RuntimeFault ? error : new RuntimeFault('TOOL_FAILED'); throw fault;}
       }})), () => current().model, binding => {sessionBinding = Object.freeze({...binding});}, async command => {
         await authorize({kind: 'control', taskId: request.taskId, runId, command});
         await append('session.control', {digest: digest(command)});
-      }, controlled, {mode, runId,hasConsumption:()=>{const value=snapshot();return value.modelCalls>0||value.toolCalls>0;}, ...(options.toolAdmission ? {toolAdmission:options.toolAdmission,recordAdmission:async (fact:import('./types.ts').ToolAdmissionFact)=>{
+      }, controlled, {mode, runId,...(options.toolFeedback?{toolFeedback:true}:{}),...(options.modelAttempts?{modelAttempts:options.modelAttempts}:{}),hasConsumption:()=>{const value=snapshot();return value.modelCalls>0||value.toolCalls>0;}, ...(options.toolAdmission ? {toolAdmission:options.toolAdmission,recordAdmission:async (fact:import('./types.ts').ToolAdmissionFact)=>{
         const captured=safeAdmissionFact(fact);toolAdmissions.push(captured);
         await append('tool.prepared',{toolName:captured.name,toolAdmission:captured});
       }} : {}), claimRecovery: id => {

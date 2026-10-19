@@ -1,4 +1,4 @@
-import type {Reason, ContextAdmission, ModelOutcome, ToolOutcome} from './types.ts';
+import type {Reason, ContextAdmission, ModelOutcome, ToolOutcome, ToolErrorFeedback} from './types.ts';
 export class RuntimeFault extends Error {
   readonly reason: Reason;
   constructor(reason: Reason) {super(reason); this.name = 'RuntimeFault'; this.reason = reason;}
@@ -70,12 +70,32 @@ export function safeToolOutcome(outcome: ToolOutcome): Readonly<ToolOutcome> {
     ...(outcome.failureCategory===undefined?{}:{failureCategory:outcome.failureCategory}),
     ...(invocation?{invocation:Object.freeze({sessionId:invocation.sessionId,branch:invocation.branch,operationId:invocation.operationId,invocationId:invocation.invocationId,toolCallId:invocation.toolCallId})}:{})});
 }
-/** Result delivery failed after execution; completion/receipt is separate from model-visible success. */
+const toolFeedbackProofs=new WeakMap<ToolOutputFailure,{outcome:Readonly<ToolOutcome>;feedback:Readonly<ToolErrorFeedback>}>();
+/** Host tool/delivery failure. Optional no-effect proof never changes completion/receipt semantics. */
 export class ToolOutputFailure extends RuntimeFault {
   readonly outcome: Readonly<ToolOutcome>;
-  constructor(outcome: ToolOutcome, reason: Reason = 'TOOL_FAILED') {
+  declare readonly feedback?: Readonly<ToolErrorFeedback>;
+  constructor(outcome: ToolOutcome, reason: Reason = 'TOOL_FAILED', feedback?: ToolErrorFeedback) {
     super(reason); this.name='ToolOutputFailure'; this.outcome=safeToolOutcome(outcome);
+    if(feedback!==undefined){
+      if(!feedback || feedback.effect!=='none' || !['not_found','not_directory','is_directory','invalid','not_supported'].includes(feedback.code) ||
+        Object.keys(feedback).some(k=>!['effect','code'].includes(k)) || reason!=='TOOL_FAILED' || outcome.effect!=='read' || outcome.status!=='completed' ||
+        outcome.modelOutput!=='failed' || outcome.receiptId!==undefined || outcome.reason!==undefined&&outcome.reason!=='TOOL_FAILED' ||
+        outcome.failureCategory!==undefined&&outcome.failureCategory!==feedback.code)throw new RuntimeFault('INVALID_OUTPUT');
+      this.feedback=Object.freeze({effect:'none',code:feedback.code});
+      toolFeedbackProofs.set(this,{outcome:this.outcome,feedback:this.feedback});
+    }
   }
+}
+
+export function trustedToolFeedback(error:ToolOutputFailure):Readonly<ToolErrorFeedback>|undefined{
+  const proof=toolFeedbackProofs.get(error);
+  return proof?.outcome===error.outcome&&error.reason==='TOOL_FAILED'?proof?.feedback:undefined;
+}
+
+/** Internal cleared feedback. Neither the public error message nor its cause crosses into Pi. */
+export class AcceptedToolFeedback extends RuntimeFault {
+  constructor(feedback:Readonly<ToolErrorFeedback>){super('TOOL_FAILED');this.message=JSON.stringify({status:'error',code:feedback.code,executed:false});}
 }
 
 /** Neutral host limit distinct from native missing/authority/unsupported failures. */

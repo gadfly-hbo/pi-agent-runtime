@@ -1,0 +1,121 @@
+{
+  "status": "SDK_SOURCE_ACCEPTANCE_FIXED_PACKAGE_UNRELEASED",
+  "gitBase": "14d548f625cab8760269fe877153c1596ff84373",
+  "fixedCandidate": {
+    "bytes": 177846,
+    "sha256": "54cc8b30c2f66c701eedbfab87db8e4a29b58294db5617b8de5361f1ee8a73ba",
+    "integrity": "sha512-d4q2BHGTN+uEOZ+WHCqZff05KmPYS6wJTquITxmO5Rpy0OI/Pv6pvMOcnXCc+IJoAaKVOsR1irRZ5xpVDWXhuQ==",
+    "fileCount": 57
+  },
+  "fixedCandidateVersion": "0.5.3-simplification.2",
+  "fixedPackageFilename": "pi-agent-runtime-0.5.3-simplification.2.tgz",
+  "fixedSourceAggregateSha256": "00384760d3be1756c03f140756babc5e9c86406e6ea36112080103734942e4d5",
+  "gitSource146AggregateSha256": "1e39512073e249a813a5e6ff2dede984b357c213a433ce43a30462eb7a76dd03",
+  "aggregateAlgorithm": "SHA256(UTF8(Python json.dumps(files,sort_keys=True,separators=(',',':')))); files array retains manifest path order",
+  "gitSourcePathsDefinition": "lexicographically ordered tracked paths excluding artifacts/public/sdk-simplification-20261019/; 146 paths",
+  "latestMainAlreadyMatches": 130,
+  "necessaryFrozen5Inheritance": [
+    "README.md",
+    "docs/MODEL-ATTEMPT-CONTRACT.md",
+    "docs/SCHEMA-FIDELITY-REPAIR.md",
+    "package-lock.json",
+    "package.json",
+    "src/index.ts",
+    "src/pi-adapter.ts",
+    "src/types.ts",
+    "tests/fixtures/model-attempt-host.mjs",
+    "tests/fixtures/model-attempt-process.mjs",
+    "tests/model-attempt-consumer.test.ts",
+    "tests/model-attempts.test.ts",
+    "tests/schema-fidelity.test.ts"
+  ],
+  "S1S2Increment": [
+    "docs/HARNESS-FIRST-LOOP.md",
+    "package-lock.json",
+    "package.json",
+    "src/errors.ts",
+    "src/index.ts",
+    "src/pi-adapter.ts",
+    "src/types.ts",
+    "tests/sdk-simplification.test.ts"
+  ],
+  "gitDeliveryAdditionalChanges": [
+    {
+      "path": "README.md",
+      "fixed2Sha256": "9d37ba0e67bf086be12b668d7e88aa3cdef4915848bc42494f44b17e5c4442ee",
+      "gitSourceSha256": "e70658d122c273ca50ba5ff241672a536c81b21d4ff51c3d06166ea36edb93ee",
+      "purpose": "Git source-only acceptance entry"
+    },
+    {
+      "path": "docs/MODEL-ATTEMPT-CONTRACT.md",
+      "fixed2Sha256": "32e06090a8ac6dc8f6186dff0ee9ce1ef4c40e920cceee6ac9cd73def1879dbc",
+      "gitSourceSha256": "74a0d434fa915db70aeab8f3a22bad5166dd0eb6e5402d7267cb0aa735801e59",
+      "purpose": "remove unnecessary private product history"
+    },
+    {
+      "path": "docs/SCHEMA-FIDELITY-REPAIR.md",
+      "fixed2Sha256": "2f36ed61ca4dbf61309572f27d5faa693c994ed21531df4f2ba3ac97554d8067",
+      "gitSourceSha256": "17aff3e39ff843e674e2532fb844838456536fd9088ecd1c968f78e556352e8a",
+      "purpose": "remove unnecessary private product history"
+    },
+    {
+      "path": "tests/model-attempt-consumer.test.ts",
+      "fixed2Sha256": "4e2259f170a5e4c7b88554a14ff2ec7d79266d5cbc7de851cfa40020b9f409c5",
+      "gitSourceSha256": "a30c1868967fb808b639697b4730656b70eadb7e871cf3fd71cd83e85809b01f",
+      "purpose": "replace machine-specific Node PATH with current process executable directory; isolated env preserved"
+    }
+  ],
+  "runtimeAllFilesMatchFixed2": true,
+  "rebuiltDistFilesMatchFixedPackage": 23,
+  "installedPackageFilesMatched": 57,
+  "nonrootLockDependenciesUnchanged": true,
+  "freshGitSourceValidation": {
+    "typecheck": "PASS",
+    "build": "PASS",
+    "example": "PASS",
+    "core": {
+      "pass": 405,
+      "fail": 0,
+      "skip": 3
+    },
+    "ui": {
+      "pass": 2,
+      "fail": 0
+    },
+    "portableModelAttemptTestsAgainstFixedPackage": {
+      "pass": 6,
+      "fail": 0
+    }
+  },
+  "reusedFixedPackageEvidence": {
+    "scope": "original .2 exact tgz/input/dependency/runtime match; not rerun as a new181-test claim",
+    "affected": {
+      "pass": 181,
+      "fail": 0,
+      "skip": 1
+    },
+    "lockedOfflineCoreAndUiInstall": "PASS with pre-existing cache",
+    "neutralPublicTypes": "PASS",
+    "closedAuditContract": "PASS; synthetic structural consumer only",
+    "legacyDefaultConfigurationIdsAndResultAuditShape": "four configurations identical to .5"
+  },
+  "skipReasons": [
+    "EX02 explicit OS sandbox not enabled",
+    "FP01 program OS sandbox not enabled",
+    "PX01 loopback SSE not enabled"
+  ],
+  "historicalFinding": {
+    "candidate": "0.5.3-simplification.1",
+    "severity": "P2",
+    "status": "fixed in .2; original candidate, failed review and causal RED retained"
+  },
+  "publication": {
+    "sourceOnly": true,
+    "originalTgzNotRepacked": true,
+    "localRawLogsNotPublished": true,
+    "consumerUpgrade": false,
+    "realProvider": false,
+    "formalTagReleaseOrNpm": false,
+    "productionSwitch": false
+  }
+}
