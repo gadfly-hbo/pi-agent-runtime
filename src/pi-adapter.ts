@@ -14,11 +14,11 @@ import {
   createAssistantMessageEventStream,
   createModels,
   validateToolArguments,
-  normalizeContext, isContextOverflow, isRecoverableLength,
+  normalizeContext, getCurrentTools, isContextOverflow, isRecoverableLength,
   type DeferredHandle, type Api, type AssistantMessage, type Message, type Model, type TranscriptContext, type TSchema, type Provider,
 } from '@earendil-works/pi-ai';
 import type {AgentRequest, BaseRequest, ConversationCheckpoint, JsonObject, ModelConfig, ModelContent, ModelMessage, ModelReply, ModelTransport, PiTransportOptions, Tool, SessionRuntimeOptions, SessionRuntime, SessionRunRequest, SessionInfo, SessionBinding, HarnessSettings, HarnessControl, HarnessControlResult, ExecutionEnvironment, ResourceLoadOptions, LoadedResources, DeferredReference, ProxyTransportOptions, ModelRequest, ContextAdmissionPolicy, ContextAdmission, ModelOutcome, ToolFailureCategory} from './types.ts';
-import {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ExecutionLimitFailure, safeAdmissionFact} from './errors.ts';
+import {RuntimeFault, ProviderFailure, ContextAdmissionFailure, ModelFailure, ExecutionLimitFailure, AcceptedToolFeedback, safeAdmissionFact} from './errors.ts';
 import {outputCap} from './policy.ts';
 import {validateThinking, isJson, freeze} from './validation.ts';
 
@@ -176,6 +176,7 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
     let observedCategory: ModelOutcome['category'];
     let httpStatus: number | undefined;
     let nativeReply: AssistantMessage | undefined;
+    let schemaRejected = false;
     const evidence: ResponseEvidence = {inputPresent:false,outputPresent:false,usageFinal:false};
     const outcome = (stop: ModelOutcome['stop']): ModelOutcome => {
       const measured = {inputTokens:(evidence.inputTokens??0)+(evidence.cacheRead??0)+(evidence.cacheWrite??0),outputTokens:evidence.outputTokens??0};
@@ -191,6 +192,24 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
         usage:{inputTokens:known(evidence.inputPresent,measured.inputTokens),outputTokens:known(evidence.outputPresent,measured.outputTokens)},
         diagnostic:failure === 'context' ? 'CONTEXT_LIMIT' : stop === 'cancelled' ? 'CANCELLED' :
           stop === 'length' ? 'OUTPUT_LIMIT' : stop === 'complete' || stop === 'tools' ? 'COMPLETE' : 'REQUEST_FAILED'};
+    };
+    // Pi 0.86.1's non-strict Anthropic encoder retains only properties/required.
+    // Restore the same full declarations via its native pre-send hook, without
+    // flattening constraints or enabling strict sampling. Pi preserves tool order.
+    const schemaPayload = (payload: unknown) => {
+      try {
+        const tools = getCurrentTools(context.messages);
+        const body = payload as {tools?: {input_schema: JsonObject; strict?: boolean}[]};
+        if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error();
+        if (body.tools === undefined && tools.length === 0) return undefined;
+        if (!Array.isArray(body.tools) || body.tools.length !== tools.length) throw Error();
+        return {...body, tools:body.tools.map((encoded,index) => {
+          const schema:unknown = tools[index]!.parameters;
+          if (!encoded || encoded.strict === true || !isJson(schema) || !schema || typeof schema !== 'object' || Array.isArray(schema) || !('type' in schema) || schema.type !== 'object' ||
+            Buffer.byteLength(JSON.stringify(schema)) > 1_048_576) throw Error();
+          return {...encoded, input_schema:structuredClone(schema)};
+        })};
+      } catch {schemaRejected = true; throw new RuntimeFault('INVALID_TOOL');}
     };
     const guardedFetch: typeof globalThis.fetch = async (input, init) => {
       try {
@@ -219,8 +238,10 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
       const api = config.protocol === 'anthropic-messages' ? anthropicMessagesApi() : openAICompletionsApi();
       const stream = api.streamSimple(model, context, {apiKey, signal: request.signal, maxTokens: request.maxOutputTokens,
         ...(request.thinkingLevel && request.thinkingLevel !== 'off' ? {reasoning: request.thinkingLevel} : {}),
-        maxRetries: 0, cacheRetention: 'none', transport: 'sse', fetch: guardedFetch});
+        maxRetries: 0, cacheRetention: 'none', transport: 'sse', fetch: guardedFetch,
+        ...(config.protocol === 'anthropic-messages' ? {onPayload:schemaPayload} : {})});
       const reply = await stream.result(); nativeReply = reply;
+      if (schemaRejected) throw new RuntimeFault('INVALID_TOOL');
       if (!['stop', 'toolUse', 'length'].includes(reply.stopReason) || (options.modelObservations && (evidence.category==='safety'||evidence.invalidOutput))) {
         if (options.modelObservations) {
           const observed = outcome(reply.stopReason === 'aborted' ? 'cancelled' : 'error');
@@ -235,7 +256,13 @@ export function createPiTransport(options: PiTransportOptions): ModelTransport {
         stop: reply.stopReason === 'stop' ? 'complete' : reply.stopReason === 'toolUse' ? 'tools' : 'length',
         usage: options.modelObservations ? {inputTokens:(evidence.inputTokens??0)+(evidence.cacheRead??0)+(evidence.cacheWrite??0),outputTokens:evidence.outputPresent?evidence.outputTokens!:request.maxOutputTokens} : modelUsage(reply.usage, request.maxOutputTokens),
         ...(options.modelObservations ? {outcome:outcome(reply.stopReason === 'stop' ? 'complete' : reply.stopReason === 'toolUse' ? 'tools' : 'length')} : {})};
-    } catch (error) {if (error instanceof RuntimeFault) throw error; if (options.modelObservations) {const observed = outcome(request.signal.aborted ? 'cancelled' : 'error'); if (category && !['context','safety','invalid-output'].includes(observed.category??'')) throw new ProviderFailure(category, observed); throw new ModelFailure(observed, request.signal.aborted ? 'CANCELLED' : 'MODEL_FAILED');} if (category) throw new ProviderFailure(category); throw new RuntimeFault('MODEL_FAILED');}
+    } catch (error) {
+      if (schemaRejected) {
+        if (!options.modelObservations) throw new RuntimeFault('INVALID_TOOL');
+        throw new ModelFailure({model:{provider:config.provider,id:config.id,protocol:config.protocol},stop:'error',category:'invalid-request',
+          physicalStatus:'not-sent',usageFinal:true,usage:{inputTokens:{kind:'known',value:0},outputTokens:{kind:'known',value:0}},diagnostic:'REQUEST_FAILED'},'INVALID_TOOL');
+      }
+      if (error instanceof RuntimeFault) throw error; if (options.modelObservations) {const observed = outcome(request.signal.aborted ? 'cancelled' : 'error'); if (category && !['context','safety','invalid-output'].includes(observed.category??'')) throw new ProviderFailure(category, observed); throw new ModelFailure(observed, request.signal.aborted ? 'CANCELLED' : 'MODEL_FAILED');} if (category) throw new ProviderFailure(category); throw new RuntimeFault('MODEL_FAILED');}
   };
 }
 function messages(context: {messages: readonly AgentMessage[]}): ModelMessage[] {
@@ -326,9 +353,14 @@ export function admitModelRequest(request: ModelRequest, policy: ContextAdmissio
   return Object.freeze({...admission, model:Object.freeze(admission.model)});
 }
 
-// Internal native-generation identity; never passed to host transports or public schemas.
-export type DriverTransport = (request: import('./types.ts').ModelRequest, call?: {id:string; recovered:boolean; nativeAttempt?:number; recoveryParentId?:string}, beforeAttempt?:()=>Promise<void>) => Promise<ModelReply>;
-export interface DriverPolicy {mode:'worker' | 'text' | 'agent'; runId:string; hasConsumption():boolean; toolAdmission?: import('./types.ts').ToolAdmissionPolicy; recordAdmission?(fact:import('./types.ts').ToolAdmissionFact):Promise<void>; claimRecovery(id:string):boolean}
+// Native details stay internal; opt-in public references are derived at the effect gate.
+interface NativeModelCall {
+  id:string; recovered:boolean; nativeAttempt?:number; recoveryParentId?:string;
+  correlation?: {logicalId:string; scopeId:string; source:import('./types.ts').ModelAttempt['source'];
+    recovery?:'native-retry'|'overflow'|'overflow-summary'; parentId?:string};
+}
+export type DriverTransport = (request: import('./types.ts').ModelRequest, call?: NativeModelCall, beforeAttempt?:()=>Promise<void>) => Promise<ModelReply>;
+export interface DriverPolicy {mode:'worker' | 'text' | 'agent'; runId:string; modelAttempts?:'v1'; toolFeedback?:boolean; hasConsumption():boolean; toolAdmission?: import('./types.ts').ToolAdmissionPolicy; recordAdmission?(fact:import('./types.ts').ToolAdmissionFact):Promise<void>; claimRecovery(id:string):boolean}
 type ControlGuard = <T>(operation: () => Promise<T>) => Promise<T>;
 const directControl: ControlGuard = operation => operation();
 interface AdmissionLedger {
@@ -366,8 +398,9 @@ function guardedSessionFiles(env: NodeExecutionEnv, guard: ControlGuard): NodeEx
 }
 
 export async function drive(config: ModelConfig, request: BaseRequest, transport: DriverTransport, signal: AbortSignal, tools: readonly Tool[] = [], activeModel: () => ModelConfig = () => config, _bind?: (binding: SessionBinding) => void, _control?: (command: HarnessControl) => Promise<void>, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {waiting: ConversationCheckpoint} | {suspended: SessionBinding}> {
-  if(policy?.toolAdmission)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
+  if(policy?.toolAdmission || policy?.toolFeedback)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
   const legacy = request as AgentRequest;
+  if(policy?.modelAttempts && (legacy.checkpoint || legacy.saveCheckpoint || legacy.shouldYield))throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
   // Existing durable checkpoints retain their versioned semantics until migration.
   // Ordinary runs use the native harness without inventing a persistent contract.
   return legacy.checkpoint || legacy.saveCheckpoint || legacy.shouldYield
@@ -378,12 +411,14 @@ export async function drive(config: ModelConfig, request: BaseRequest, transport
 async function driveHarness(config: ModelConfig, request: BaseRequest, transport: DriverTransport,
   signal: AbortSignal, tools: readonly Tool[], activeModel: () => ModelConfig,
   persistent?: {session: Session; reconcile: SessionRuntimeOptions['reconcile']; bindOperation: SessionRuntimeOptions['bindOperation']; bind: (binding: SessionBinding) => void; settings: HarnessSettings; extensions?: SessionRuntimeOptions['extensions']; admissionStore:{read():Promise<AdmissionLedger|undefined>;hasTaskBinding():Promise<boolean>;authorityId():string;write(state:AdmissionLedger):Promise<void>}; activate(lane: AgentLane, harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'], binding: SessionBinding): void; deactivate(): Promise<void>}, guard: ControlGuard = directControl, policy?:DriverPolicy): Promise<string | {suspended: SessionBinding}> {
+  if(policy?.modelAttempts && persistent?.settings.deferred)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
   const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
   const repo = new MemorySessionRepo();
   const model = providerModel(config, outputCap(request.limits));
   let failure: unknown;
   let harness: Awaited<ReturnType<typeof AgentHarness.create>>['harness'] | undefined;
   const callIds = new Set<string>();
+  const feedbackCalls = new Set<string>();
   let serializeBatch = false;
   let modelCall: Parameters<DriverTransport>[1];
   let toolTail: Promise<void> = Promise.resolve();
@@ -473,15 +508,16 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         if ((calls.length > 0) !== (reply.stop === 'tools')) {if(selected)await rejectCalls(calls,selected,'INVALID_CALL');throw new RuntimeFault('INVALID_OUTPUT');}
         // Keep whole-batch admission before any native tool can take effect.
         batchPrepared.clear();
+        const preparedArguments=new Map<string,JsonObject>();
         const invalid=new Map<string,'STRUCTURE_MISMATCH'|'HOOK_REJECTED'>();
         for (const call of calls) {
           if (callIds.has(call.id)) {if(selected)await rejectCalls(calls,selected,'INVALID_CALL');throw new RuntimeFault('INVALID_TOOL');}
           const tool = phaseTools.find(tool => tool.name === call.name);
           if (!tool || selected&&!selected.tools.some(t=>t.name===call.name)){if(selected)await rejectCalls(calls,selected,'TOOL_UNAVAILABLE');throw new RuntimeFault('INVALID_TOOL');}
           try {
+            const raw=structuredClone(call.arguments),compatible=tool.prepareArguments?tool.prepareArguments(raw):raw;
+            let prepared=prepareToolArguments(tool.parameters,compatible);
             if(selected){
-              const raw=structuredClone(call.arguments),compatible=tool.prepareArguments?tool.prepareArguments(raw):raw;
-              let prepared=prepareToolArguments(tool.parameters,compatible);
               if(tool.argumentPolicy!=='native' && !isDeepStrictEqual(compatible,prepared))throw new RuntimeFault('INVALID_TOOL');
               if(persistent?.extensions?.beforeTool){
                 let decision:Awaited<ReturnType<NonNullable<NonNullable<SessionRuntimeOptions['extensions']>['beforeTool']>>>;
@@ -493,8 +529,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
               batchPrepared.set(call.id,{args:prepared,fact:{version:'1',taskId:request.taskId,runId:policy!.runId,...(request.purpose===undefined?{}:{purpose:request.purpose}),
                 ...(persistent?{session:{sessionId:persistent.session.metadata.id,branch:(request as SessionRunRequest).branch??'main',operationId:activeOperationId}}:{}),
                 callId:call.id,name:call.name,policyVersion:policy!.toolAdmission!.policyVersion,viewVersion:selected.version,viewDigest:digest(selected),rawArgumentsDigest:digest(call.arguments),disposition:'ready',correctionsUsed:correctionCounts.get(call.name)??0,terminal:false}});
-            }else validateToolArguments({...tool, parameters: tool.parameters as unknown as TSchema},
-              {type: 'toolCall', id: call.id, name: call.name, arguments: call.arguments});
+            }else preparedArguments.set(call.id,prepared);
           }
           catch {if(!selected)throw new RuntimeFault('INVALID_TOOL');invalid.set(call.id,invalid.get(call.id)??'STRUCTURE_MISMATCH');}
           callIds.add(call.id);
@@ -518,7 +553,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
           await recordFacts([...batchPrepared.values()].map(c=>c.fact),terminal);
           reply={...reply,content:reply.content.map(c=>c.kind==='tool'?{...c,arguments:batchPrepared.get(c.id)!.args}:c)};
           await guard(()=>harness!.setTools(nativeTools(),context));
-        }
+        }else reply={...reply,content:reply.content.map(c=>c.kind==='tool'?{...c,arguments:preparedArguments.get(c.id)!}:c)};
         // Harness 0.86.1 uses only run.settings.toolExecution; unlike Agent,
         // it does not honor a called tool's sequential override. Preserve the
         // SDK batch contract at the effect boundary, without another tool loop.
@@ -586,7 +621,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
                   update: (value, durable = false) => {if (Buffer.byteLength(JSON.stringify(value)) > 1_048_576) throw new RuntimeFault('INVALID_REQUEST'); _update({content:[{type:'text',text:JSON.stringify(value)}],details:null},durable ? {checkpoint:true} : undefined);}} : undefined);
               assertOpen();
               return nativeToolResult(tool, value);
-            } catch (error) {failure ??= error; throw error;}
+            } catch (error) {if(error instanceof AcceptedToolFeedback)feedbackCalls.add(id);else failure ??= error;throw error;}
           };
           if (!serializeBatch) return perform();
           const pending = toolTail.then(perform);
@@ -618,6 +653,24 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         modelCall = event.step === 'assistant' && state?.at === 'assistant.ready' ?
           {id: `${event.runId}:${state.generationContext.triggerEntryId}`, recovered: state.generationContext.overflowRecoveryUsed, nativeAttempt:event.attempt} :
           {id: randomUUID(), recovered:false, ...(recoveryParentId ? {recoveryParentId} : {})};
+        if(policy?.modelAttempts){
+          // Hash only persisted native identifiers/positions, never messages or model claims.
+          const identity=(...ids:(string|number)[])=>{
+            if(ids.some(id=>typeof id==='number'?!Number.isSafeInteger(id)||id<0:typeof id!=='string'||!/^[A-Za-z0-9_.:-]{1,256}$/.test(id)))throw new RuntimeFault('STATE_FAILED');
+            return createHash('sha256').update(JSON.stringify(ids)).digest('hex');
+          };
+          if(!Number.isSafeInteger(event.attempt)||event.attempt<1)throw new RuntimeFault('STATE_FAILED');
+          if(event.step==='assistant' && state?.at==='assistant.ready' && typeof state.generationContext.overflowRecoveryUsed==='boolean'){
+            const logicalId=identity(event.runId,state.generationContext.triggerEntryId);
+            modelCall.correlation={logicalId,scopeId:modelCall.id,source:'assistant',
+              ...(state.generationContext.overflowRecoveryUsed?{recovery:'overflow',parentId:modelCall.id}:event.attempt>1?{recovery:'native-retry',parentId:modelCall.id}:{})};
+          }else if((event.step==='compaction'||event.step==='branch_summary') && state?.at==='summary.effect_pending' &&
+            !state.request && state.attempt===event.attempt && Array.isArray(state.usageIds) && (event.step==='branch_summary' || ['manual','threshold','overflow'].includes(state.task.reason??''))){
+            const scopeId=identity(event.runId,state.task.taskId);
+            modelCall.correlation={logicalId:identity(event.runId,state.task.taskId,state.usageIds.length),scopeId,source:event.step,
+              ...(recoveryParentId?{recovery:'overflow-summary',parentId:recoveryParentId}:event.attempt>1?{recovery:'native-retry',parentId:scopeId}:{})};
+          }else throw new RuntimeFault('STATE_FAILED');
+        }
       } catch (error) {failure ??= error;}
       return undefined;
     });
@@ -660,7 +713,7 @@ async function driveHarness(config: ModelConfig, request: BaseRequest, transport
         if(admission.terminal)failure??=new RuntimeFault('INVALID_TOOL');
         return{isError:true,terminate:admission.terminal};
       }
-      if (event.isError) failure ??= new RuntimeFault('TOOL_FAILED');
+      if (event.isError && !feedbackCalls.delete(event.toolCallId)) failure ??= new RuntimeFault('TOOL_FAILED');
       return failure ? {terminate: true} : undefined;
     });
     const lane = await guard(() => harness!.lane(branch, context));
@@ -997,6 +1050,7 @@ export function createSessionBackend(options: SessionRuntimeOptions): {sessions:
     },
     drive: (config, request, transport, signal, tools = [], activeModel = () => config, bind = () => {}, control = async () => {}, guard = directControl, policy) => {
       const r = request as SessionRunRequest & AgentRequest;
+      if(policy?.toolFeedback && settings.deferred)throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
       if (r.modelRecovery && settings.retry?.enabled) throw new RuntimeFault('INVALID_REQUEST');
       if (settings.deferred && !config.deferred) throw new RuntimeFault('CAPABILITY_UNAVAILABLE');
       if (!r.sessionId || r.checkpoint || r.saveCheckpoint || r.shouldYield ||

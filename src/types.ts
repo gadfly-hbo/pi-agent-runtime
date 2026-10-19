@@ -118,6 +118,26 @@ export interface ModelOutcome {
   usage: {inputTokens: ReportedTokens; outputTokens: ReportedTokens};
   diagnostic: 'COMPLETE' | 'OUTPUT_LIMIT' | 'CONTEXT_LIMIT' | 'REQUEST_FAILED' | 'CANCELLED' | 'UNKNOWN';
 }
+/** SDK-created correlation, never a grant or a business-work identity. */
+export type ModelAttempt = {
+  version: '1';
+  logicalRequestId: string;
+  physicalAttemptId: string;
+  source: 'assistant' | 'compaction' | 'branch_summary';
+} & ({kind:'initial';recovery?:never} | {kind:'recovery';recovery: {
+    logicalRequestId: string;
+    physicalAttemptId: string;
+    reason: 'same-model' | 'fallback' | 'native-retry' | 'overflow' | 'overflow-summary';
+  }});
+/** Durable AuditSink owns persistence. Missing/late facts cannot authorize replay. */
+export interface ModelAttemptFact {
+  version: '1';
+  attempt: Readonly<ModelAttempt>;
+  outcome: Readonly<ModelOutcome>;
+  terminal: boolean;
+  late: boolean;
+  reason?: Reason;
+}
 export interface DeferredReference {id: string; data?: JsonValue; pollAfterMs?: number; expiresAt?: number}
 export interface ModelReply {
   /** Required on replies when Runtime.modelObservations is v1; legacy numbers cannot prove known usage. */
@@ -165,6 +185,8 @@ export interface AuditEvent {
   attempt?: number;
   failureCategory?: 'quota' | 'rate-limit' | 'unavailable' | 'network';
   modelOutcome?: Readonly<ModelOutcome>;
+  modelAttempt?: Readonly<ModelAttempt>;
+  modelAttemptFact?: Readonly<ModelAttemptFact>;
   toolOutcome?: Readonly<ToolOutcome>;
   toolAdmission?: Readonly<ToolAdmissionFact>;
   session?: SessionBinding;
@@ -174,7 +196,7 @@ export interface AuditSink {append(event: Readonly<AuditEvent>, signal: AbortSig
 export type Authorization = {
   taskId: string; runId: string;
   session?: SessionBinding;
-} & ({kind: 'model'; request: ModelRequest} | {kind: 'tool'; name: string; effect: Tool['effect']; arguments: JsonObject; invocation?: ToolInvocation} | {kind: 'publish'} | {kind: 'control'; command: HarnessControl});
+} & ({kind: 'model'; request: ModelRequest; modelAttempt?: Readonly<ModelAttempt>} | {kind: 'tool'; name: string; effect: Tool['effect']; arguments: JsonObject; invocation?: ToolInvocation} | {kind: 'publish'} | {kind: 'control'; command: HarnessControl});
 /** Immutable per-task purpose configuration. Transport/execute remain explicit host capabilities. */
 export interface PurposeConfig {
   id: string;
@@ -187,6 +209,10 @@ export interface PurposeConfig {
   thinkingLevel?: ThinkingLevel;
 }
 export interface RuntimeOptions {
+  /** Explicit trusted no-effect read feedback; native persistent run only, new task identity. */
+  toolFeedback?: ToolFeedbackPolicy;
+  /** Native Harness attempt correlation; requires modelObservations:'v1'. New task identity. */
+  modelAttempts?: 'v1';
   /** Opt-in for createSessionRuntime.run only; plain/checkpoint entrypoints reject it. Omission preserves legacy identities. */
   toolAdmission?: ToolAdmissionPolicy;
   /** New per-call observation/accounting semantics; pinned to new tasks only. */
@@ -261,6 +287,16 @@ export interface ToolOutputPolicy {
 }
 /** Safe diagnostic only; never an effect, retry or authorization decision. */
 export type ToolFailureCategory = 'not_found' | 'not_directory' | 'is_directory' | 'permission_denied' | 'invalid' | 'not_supported' | 'cancelled' | 'timeout' | 'limit_exceeded' | 'unknown';
+/** Host attestation, never inferred from error text, category or a read label. */
+export interface ToolErrorFeedback {
+  effect: 'none';
+  code: 'not_found' | 'not_directory' | 'is_directory' | 'invalid' | 'not_supported';
+}
+export interface ToolFeedbackPolicy {
+  policyVersion: string;
+  /** Fixed host permission to expose bounded no-effect errors from these read tools. */
+  tools: readonly string[];
+}
 export interface ToolOutcome {
   name: string;
   effect: Tool['effect'];
@@ -339,6 +375,7 @@ export interface AgentRequest extends BaseRequest {
 export type RunResult<T> = {
   taskId: string; runId: string; usage: Usage; usageKnown: boolean;
   modelOutcome?: Readonly<ModelOutcome>;
+  modelAttempts?: readonly Readonly<ModelAttemptFact>[];
   toolOutcomes?: readonly Readonly<ToolOutcome>[];
   toolAdmissions?: readonly Readonly<ToolAdmissionFact>[];
 } & ({status: 'succeeded'; value: T} | {status: 'waiting'; reason: 'BUSINESS_WAIT'; checkpoint: ConversationCheckpoint} | {status: 'suspended'; reason: 'DEFERRED'; session: SessionBinding} | {status: 'failed' | 'cancelled' | 'blocked'; reason: Reason});

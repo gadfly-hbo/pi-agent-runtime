@@ -175,3 +175,44 @@ A11 Browser视觉/HTTP产品接入、A16完整业务工具到保存/重开由Min
 真实Provider、正式产品验收、发布/生产、Git提交/推送、消费者升级均未授权/未运行。
 两个产品暂停任务保持暂停。独立审查对先前0.5.3-harness.1发现固定schema上界、跨独立Session计数、损坏lane误空及祖先读授权误分类；原包与NEEDS_REPAIR保留。上述修正有修改前因果RED和新回归，0.5.3-harness.2另出固定身份，不覆盖.1。
 本方固定候选及完整证据归档交用户转交后，停在待联合反馈。
+
+## S1/S2 精简本地候选（2026-10-19）
+
+本节承接用户批准的精简 v0.2 与本轮工程 Prompt；只授权 SDK 最小修正、
+离线验证和新固定本地候选，不授予消费者采用、Provider、Git 交付或发行。
+原 `.5` 包、冻结源、历史失败/UNKNOWN 和原工程树 WIP 保留。
+
+- S1：新 Task 的 `createSessionRuntime.run` 可显式配置
+  `toolFeedback:{policyVersion,tools:[工具名]}`。首批只允许列出的只读工具；
+  旧普通/checkpoint/deferred 组合拒绝该政策，省略时旧行为/配置 hash 不变。
+  可信宿主可在 `ToolOutputFailure(outcome,'TOOL_FAILED',feedback)` 中声明
+  `feedback:{effect:'none',code}`；code 只允许 not_found/not_directory/
+  is_directory/invalid/not_supported。该声明证明操作已终结且无待确认业务
+  效果，必须绑定 completed/failed 的 outcome、工具/units/invocation，且无
+  receipt，outcome.reason 如存在须同为 TOOL_FAILED；冲突的结构化停止原因
+  拒绝授予反馈。它不是从 read 标签、errno 或 failureCategory 推断出的证明；
+  SDK 不自动把原生工厂的任意错误升级成该声明。反馈只公开固定代码与
+  executed:false，原生 isError 保留；不把原异常文本/cause 写入模型或审计。
+  既有审计字段不扩展；选择新政策才增加既有 ToolOutcome 观察。撤权、审计/
+  账本/ACK 故障、取消/期限/迟到、UNKNOWN、已有效果的交付故障仍硬停。
+  不自动重调工具；下一正常逻辑请求仍经授权/计量，R4 once-extra 不变。
+- S2：普通 off、持久 off 的具体 prepare 在副本上一次，使用 Pi validator
+  返回值交原生。持久 on 已有 prepare/strict-native/view/批屏障直接复用。
+  普通 on 继续拒绝；off 保留原生归一化与 hook 时序；原生必要再校验、替参
+  再校验、执行一致性与效果前授权保留。Anthropic schemaPayload 桥不改。
+- S3：旧 checkpoint 建议弃用，新持续任务优先原生 Session；这是用法建议，
+  不增加旧入口拒绝、不规定删除版本/期限。旧公开接口、driveCheckpoint、
+  ACK/业务等待/UNKNOWN 及兼容测试均保留；fromCheckpoint 仍服务 R1 和扩展。
+
+公共验证接缝为 createRuntime.runAgent、createSessionRuntime.run、受信 Tool、
+ModelTransport、AuditSink、BudgetStore 和现有 inspection/history；先保留
+S2 兼容输入在真实 Pi 调用链的因果 RED，S1 用既有 ToolOutputFailure 的新
+参数与运行政策规格验证行为，不以缺导出/编译失败冒充 RED。完整结果依
+README 集中 verify/example、同一 tgz 的隔离消费者和未参与编写者只读复核。
+
+该增量本地候选身份为 `0.5.3-simplification.2`，不是正式发行版本承诺。
+受信宿主须自行确保无效果证明真实；SDK 仅校验受信载体/调用绑定，不从
+任意文件错误推断。证明保存在构造器私有载体中，追加普通同名属性无效。
+无策略 beforeTool 的原生替参校验错误保持原有 immediate-error 反馈，可由
+后续正常模型步骤消费；它拒绝业务 executor，不因此改成全局故障。该行为
+已对冻结 `.5` 和本候选作同接口对照；与普通 execute 抛错的硬停分开。

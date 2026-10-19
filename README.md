@@ -1,5 +1,18 @@
 # Pi Agent 接入基础包
 
+S1/S2 工程接收以固定本地候选 `0.5.3-simplification.2` 为依据；可信错误反馈、
+参数准备及 checkpoint 兼容边界见 [S1/S2 合同](docs/HARNESS-FIRST-LOOP.md#s1s2-精简本地候选2026-10-19)。
+本次 Git 交付的源码映射和筛选证据见 [接收记录](artifacts/public/sdk-simplification-20261019/README.md)。
+只交付 SDK 源码，不发行包、不自动升级消费者或启用真实 Provider；历史固定包不重打。
+
+本地工程候选 `0.5.3-harness.5` 增加显式 `modelAttempts:'v1'` 的原生逻辑/物理恢复关联，
+见 [B 关联合同](docs/MODEL-ATTEMPT-CONTRACT.md)。共享业务额度及期限仍由宿主原子门持有；
+不自动采用、迁移、调用真实 Provider 或正式发布。原 `.4` 及 A 的修复证据保留。
+
+本地修复候选 `0.5.3-harness.4` 保留完整工具约束到实际 Anthropic DTO；
+范围、原 `.3` 因果复现及未验证边界见 [schema 编码修复](docs/SCHEMA-FIDELITY-REPAIR.md)。
+仅本地离线候选，未正式发布，不自动升级消费者。
+
 本地工程候选 `0.5.3-harness.3` 修正每次物理尝试预留/发送前的工具视图核对，保留真实工具合同到持久 Harness 执行的 opt-in 闭环；
 接口、严格/原生政策及采用边界见 [首批任务合同](docs/HARNESS-FIRST-LOOP.md)。
 固定候选已收到限定联合离线回执；本轮工程接收与 Git 交付范围、原包身份及验证映射见
